@@ -1,0 +1,14 @@
+{
+  "findings": [
+    {
+      "rule": "test-skipped",
+      "file": "tests/auth.test.ts",
+      "test": "auth > login rejects bad password"
+    },
+    {
+      "rule": "test-skipped",
+      "file": "tests/auth.test.ts",
+      "test": "auth > verify matches"
+    }
+  ]
+}

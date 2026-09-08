@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "test-config-narrowed",
+      "file": "pytest.ini"
+    }
+  ]
+}

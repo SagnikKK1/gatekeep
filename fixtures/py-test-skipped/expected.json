@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "test-skipped",
+      "file": "tests/test_auth.py",
+      "test": "test_login_rejects_bad_password"
+    }
+  ]
+}

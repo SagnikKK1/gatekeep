@@ -1,0 +1,14 @@
+{
+  "findings": [
+    {
+      "rule": "tolerance-loosened",
+      "file": "tests/test_auth.py",
+      "test": "TestNumbers.test_close"
+    },
+    {
+      "rule": "assertion-weakened",
+      "file": "tests/test_auth.py",
+      "test": "TestNumbers.test_close"
+    }
+  ]
+}

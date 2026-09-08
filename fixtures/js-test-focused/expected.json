@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "test-focused",
+      "file": "tests/auth.test.ts",
+      "test": "auth > login returns user"
+    }
+  ]
+}

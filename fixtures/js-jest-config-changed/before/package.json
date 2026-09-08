@@ -1,0 +1,1 @@
+{"name":"x","scripts":{"test":"jest"},"jest":{"testMatch":["**/*.test.ts"]}}

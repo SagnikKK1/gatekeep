@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "tolerance-loosened",
+      "file": "tests/auth.test.ts",
+      "test": "auth > close enough"
+    }
+  ]
+}

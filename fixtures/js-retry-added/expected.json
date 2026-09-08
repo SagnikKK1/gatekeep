@@ -1,0 +1,13 @@
+{
+  "findings": [
+    {
+      "rule": "retry-added",
+      "file": "tests/auth.test.ts"
+    },
+    {
+      "rule": "retry-added",
+      "file": "tests/auth.test.ts",
+      "test": "auth > login rejects bad password"
+    }
+  ]
+}

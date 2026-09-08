@@ -1,0 +1,14 @@
+{
+  "findings": [
+    {
+      "rule": "assertion-weakened",
+      "file": "tests/auth.test.ts",
+      "test": "auth > login returns user"
+    },
+    {
+      "rule": "assertion-weakened",
+      "file": "tests/auth.test.ts",
+      "test": "auth > login rejects bad password"
+    }
+  ]
+}

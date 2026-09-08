@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "file-skipped",
+      "file": "tests/test_auth.py"
+    }
+  ]
+}

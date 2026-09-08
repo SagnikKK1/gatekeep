@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "mock-on-changed-module",
+      "file": "tests/test_auth.py",
+      "test": "test_login_returns_user"
+    }
+  ]
+}

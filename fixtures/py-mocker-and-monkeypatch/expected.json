@@ -1,0 +1,14 @@
+{
+  "findings": [
+    {
+      "rule": "mock-on-changed-module",
+      "file": "tests/test_auth.py",
+      "test": "test_login_returns_user"
+    },
+    {
+      "rule": "mock-unrelated-to-change",
+      "file": "tests/test_auth.py",
+      "test": "test_login_returns_user"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+import { login, verify } from '../src/auth';
+
+describe('auth', () => {
+  it('verify matches', () => {
+    expect(verify('a', 'a')).toBe(true);
+    expect(verify('a', 'b')).toBe(false);
+  });
+  it('login returns user', () => {
+    expect(login('bob', 'pw', { bob: 'pw' })).toEqual({ ok: true, user: 'bob' });
+  });
+  it('close enough', () => {
+    expect(0.1 + 0.2).toBeCloseTo(0.3, 5);
+  });
+});

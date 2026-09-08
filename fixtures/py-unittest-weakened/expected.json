@@ -1,0 +1,14 @@
+{
+  "findings": [
+    {
+      "rule": "assertion-weakened",
+      "file": "tests/test_auth.py",
+      "test": "TestLogin.test_ok"
+    },
+    {
+      "rule": "assertion-weakened",
+      "file": "tests/test_auth.py",
+      "test": "TestLogin.test_bad"
+    }
+  ]
+}
