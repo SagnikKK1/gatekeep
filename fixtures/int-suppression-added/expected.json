@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "suppression-added",
+      "file": "app/calc.py"
+    }
+  ]
+}

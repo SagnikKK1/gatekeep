@@ -1,0 +1,11 @@
+name: ci
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm test || true
+      - run: npx eslint .

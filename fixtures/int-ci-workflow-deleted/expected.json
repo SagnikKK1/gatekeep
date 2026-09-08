@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "ci-check-removed",
+      "file": ".github/workflows/ci.yml"
+    }
+  ]
+}

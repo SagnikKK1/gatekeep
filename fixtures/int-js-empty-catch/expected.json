@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "error-swallowing-added",
+      "file": "src/calc.ts"
+    }
+  ]
+}

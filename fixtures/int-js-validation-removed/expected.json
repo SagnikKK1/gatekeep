@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "validation-removed",
+      "file": "src/calc.ts"
+    }
+  ]
+}

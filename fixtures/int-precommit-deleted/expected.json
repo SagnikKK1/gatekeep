@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "hooks-removed",
+      "file": ".pre-commit-config.yaml"
+    }
+  ]
+}

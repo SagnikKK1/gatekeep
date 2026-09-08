@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "snapshots-regenerated",
+      "file": "tests/__snapshots__/c1.test.ts.snap"
+    }
+  ]
+}

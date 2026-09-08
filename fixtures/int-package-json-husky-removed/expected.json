@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "hooks-removed",
+      "file": "package.json"
+    }
+  ]
+}

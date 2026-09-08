@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "lint-config-loosened",
+      "file": "tsconfig.json"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "suppression-added",
+      "file": "src/calc.ts"
+    }
+  ]
+}

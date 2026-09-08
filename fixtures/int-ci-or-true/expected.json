@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "ci-weakened",
+      "file": ".github/workflows/ci.yml"
+    }
+  ]
+}
