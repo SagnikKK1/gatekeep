@@ -1,0 +1,100 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+
+export interface SessionState {
+  id: string;
+  /** Set when the home copy was missing and the state came from the .git mirror. */
+  recovered?: boolean;
+  harness: string;
+  startedAt: string;
+  baseTree: string;
+  prompt: string | null;
+  blocks: number;
+  lastVerdict: string | null;
+  /** gatekeep.config.json as it was when the session started; the working-tree copy is not trusted after that. */
+  configText: string | null;
+  /** sha1 of each protected file on disk at session start (covers gitignored files the snapshot cannot see). */
+  protectedHashes?: Record<string, string | null>;
+}
+
+/** State lives outside the repository so the agent being gated cannot edit it. Override with GATEKEEP_HOME. */
+export function stateHome(): string {
+  return process.env.GATEKEEP_HOME ?? path.join(os.homedir(), '.gatekeep');
+}
+
+export function repoStateDir(root: string): string {
+  const key = createHash('sha1').update(path.resolve(root)).digest('hex').slice(0, 16);
+  return path.join(stateHome(), 'repos', `${path.basename(root).replace(/[^A-Za-z0-9._-]/g, '_')}-${key}`);
+}
+
+export function sessionDir(root: string): string { return path.join(repoStateDir(root), 'sessions'); }
+export function verdictDir(root: string): string { return path.join(repoStateDir(root), 'verdicts'); }
+
+function file(root: string, id: string): string { return path.join(sessionDir(root), `${safe(id)}.json`); }
+function safe(id: string): string { return id.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120) || 'default'; }
+
+/** Mirror under the repository's own .git directory: survives a wipe of GATEKEEP_HOME, and agents do not edit .git internals. */
+function mirrorFile(root: string, gitDir: string | null, id: string): string | null {
+  return gitDir ? path.join(gitDir, 'gatekeep', 'sessions', `${safe(id)}.json`) : null;
+}
+
+export async function loadSession(root: string, id: string, gitDir: string | null = null): Promise<SessionState | null> {
+  let home: SessionState | null = null, mirror: SessionState | null = null;
+  try { home = JSON.parse(await fs.readFile(file(root, id), 'utf8')) as SessionState; } catch { /* none */ }
+  const mf = mirrorFile(root, gitDir, id);
+  if (mf) { try { mirror = JSON.parse(await fs.readFile(mf, 'utf8')) as SessionState; } catch { /* none */ } }
+  if (home && mirror) { home.blocks = mirror.blocks; home.baseTree = mirror.baseTree; home.configText = mirror.configText; home.protectedHashes = mirror.protectedHashes; return home; } // the .git mirror is authoritative: it is out of the agent's usual reach
+  if (home) return home;
+  if (mirror) return { ...mirror, recovered: true };
+  return null;
+}
+
+/** Atomic write: tmp + rename, so concurrent hooks never read a torn file. */
+export async function writeAtomic(p: string, text: string): Promise<void> {
+  await fs.mkdir(path.dirname(p), { recursive: true, mode: 0o700 });
+  const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tmp, text, { mode: 0o600 });
+  await fs.rename(tmp, p);
+}
+
+/** Serialize read-modify-write of one session across concurrent hooks with an O_EXCL lock file. */
+export async function withSessionLock<T>(root: string, id: string, fn: () => Promise<T>): Promise<T> {
+  const lock = `${file(root, id)}.lock`;
+  await fs.mkdir(path.dirname(lock), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + 15000;
+  for (;;) {
+    try { const h = await fs.open(lock, 'wx', 0o600); await h.close(); break; }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      try { const st = await fs.stat(lock); if (Date.now() - st.mtimeMs > 60000) { await fs.rm(lock, { force: true }); continue; } } catch { /* vanished */ }
+      if (Date.now() > deadline) throw new Error('session lock timeout');
+      await new Promise((r) => setTimeout(r, 50 + Math.random() * 100));
+    }
+  }
+  try { return await fn(); } finally { await fs.rm(lock, { force: true }); }
+}
+
+export async function saveSession(root: string, s: SessionState, gitDir: string | null = null): Promise<void> {
+  const { recovered: _r, ...persisted } = s;
+  const text = JSON.stringify(persisted, null, 2) + '\n';
+  await writeAtomic(file(root, s.id), text);
+  const mf = mirrorFile(root, gitDir, s.id);
+  if (mf) { try { await writeAtomic(mf, text); } catch { /* read-only .git: mirror is best effort */ } }
+}
+
+export async function newSession(root: string, id: string, harness: string, baseTree: string, configText: string | null, gitDir: string | null = null, protectedHashes?: Record<string, string | null>): Promise<SessionState> {
+  const s: SessionState = { id, harness, startedAt: new Date().toISOString(), baseTree, prompt: null, blocks: 0, lastVerdict: null, configText, protectedHashes };
+  await saveSession(root, s, gitDir);
+  return s;
+}
+
+export async function listSessions(root: string): Promise<SessionState[]> {
+  try {
+    const names = await fs.readdir(sessionDir(root));
+    const out: SessionState[] = [];
+    for (const n of names) if (n.endsWith('.json')) { try { out.push(JSON.parse(await fs.readFile(path.join(sessionDir(root), n), 'utf8')) as SessionState); } catch { /* skip */ } }
+    return out.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  } catch { return []; }
+}
