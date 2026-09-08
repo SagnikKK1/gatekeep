@@ -164,7 +164,7 @@ echo '{"testCommand": "sleep 30"}' > gatekeep.config.json && git commit -qam "sl
 J="$E2E/testrun-js"; rm -rf "$J"; mkdir -p "$J/src" "$J/tests"; pushd "$J" >/dev/null; git init -q -b main
 printf 'exports.add = (a, b) => a + b;\n' > src/calc.js
 printf "const { test } = require('node:test');\nconst assert = require('node:assert');\nconst { add } = require('../src/calc');\ntest('adds', () => { assert.strictEqual(add(2, 3), 5); });\n" > tests/calc.test.js
-echo '{"testCommand": "node --test tests/ 2>&1", "testTimeoutMs": 60000}' > gatekeep.config.json
+echo '{"testCommand": "node --test tests/calc.test.js 2>&1", "testTimeoutMs": 60000}' > gatekeep.config.json
 git add -A && git commit -qm base
 printf 'exports.add = (a, b) => a * b;\n' > src/calc.js
 printf "const { test } = require('node:test');\nconst assert = require('node:assert');\nconst { add } = require('../src/calc');\ntest('adds', () => { assert.strictEqual(add(2, 3), 6); });\n" > tests/calc.test.js

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { parseConfig } from '../src/config.js';
 import { analyze } from '../src/rules.js';
 import { installClaudeCode, uninstallClaudeCode, GATEKEEP_HOOK_RE } from '../src/install.js';
@@ -115,4 +117,12 @@ test('test-run findings map results to rules', () => {
   const f3 = testRunFindings({ ...base, status: 'fail', originalExit: -1, currentExit: null, reason: 'timeout' }, {});
   assert.equal(f3[0]?.rule, 'test-run-timeout');
   assert.equal(testRunFindings({ ...base, status: 'fail', originalExit: 1, currentExit: 0 }, { 'original-tests-fail': 'off' }).length, 0);
+});
+
+test('every fixture file is tracked by git (a fixture .gitignore must not hide its own files from CI)', () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  let out = '';
+  try { out = execFileSync('git', ['ls-files', '--others', '--ignored', '--exclude-standard', 'fixtures/'], { cwd: root, encoding: 'utf8' }); }
+  catch { return; } // not a git checkout (e.g. an npm tarball): nothing to check
+  assert.equal(out.trim(), '', `ignored fixture files, add them with git add -f:\n${out}`);
 });
