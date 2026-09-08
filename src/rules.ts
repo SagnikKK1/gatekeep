@@ -64,6 +64,11 @@ export const DEFAULT_SEVERITIES: Record<string, Severity> = {
   ...CLAIM_SEVERITIES,
   ...SCOPE_SEVERITIES,
   'gitignore-hides-tests': 'block',
+  // Model-backed review (opt-in via `judge` in the config). Severities are enforced here, never by the model.
+  'judge-test-weakened': 'warn',
+  'judge-special-casing': 'warn',
+  'judge-task-mismatch': 'warn',
+  'judge-skipped': 'warn',
 };
 
 export const DEFAULT_RULE_CONFIG: RuleConfig = {

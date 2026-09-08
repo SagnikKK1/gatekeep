@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DEFAULT_RULE_CONFIG, DEFAULT_SEVERITIES, type RuleConfig } from './rules.js';
 import type { Severity } from './model.js';
+import { DEFAULT_JUDGE_MODEL, JUDGE_EFFORTS, type JudgeConfig } from './judge.js';
 
 export interface GatekeepConfig {
   rules: RuleConfig;
@@ -12,12 +13,14 @@ export interface GatekeepConfig {
   maxBlocks: number;
   /** Treat warnings as blocking. */
   strict: boolean;
+  /** Model-backed review of the diff with the task in hand. Null = off (the default). */
+  judge: JudgeConfig | null;
 }
 
 export const CONFIG_FILENAME = 'gatekeep.config.json';
 
 export function defaultConfig(): GatekeepConfig {
-  return { rules: { ...DEFAULT_RULE_CONFIG, severities: { ...DEFAULT_RULE_CONFIG.severities } }, maxBlocks: 3, strict: false, testCommand: null, testTimeoutMs: 300000 };
+  return { rules: { ...DEFAULT_RULE_CONFIG, severities: { ...DEFAULT_RULE_CONFIG.severities } }, maxBlocks: 3, strict: false, testCommand: null, testTimeoutMs: 300000, judge: null };
 }
 
 /**
@@ -44,6 +47,19 @@ export function parseConfig(raw: string | null | undefined): { cfg: GatekeepConf
   if (j.strict !== undefined) { if (typeof j.strict === 'boolean') cfg.strict = j.strict; else problems.push('"strict" must be a boolean'); }
   if (j.testCommand !== undefined) { if (j.testCommand === null || (typeof j.testCommand === 'string' && j.testCommand.trim() !== '')) cfg.testCommand = j.testCommand === null ? null : j.testCommand.trim(); else problems.push('"testCommand" must be a non-empty string or null'); }
   if (j.testTimeoutMs !== undefined) { if (typeof j.testTimeoutMs === 'number' && j.testTimeoutMs > 0) cfg.testTimeoutMs = j.testTimeoutMs; else problems.push('"testTimeoutMs" must be a positive number'); }
+  if (j.judge !== undefined && j.judge !== null && j.judge !== false) {
+    if (j.judge && typeof j.judge === 'object' && !Array.isArray(j.judge)) {
+      const jj = j.judge as Record<string, unknown>;
+      const jc: JudgeConfig = { model: DEFAULT_JUDGE_MODEL, provider: 'anthropic', maxDiffBytes: 200 * 1024, canBlock: false, effort: 'high' };
+      if (jj.model !== undefined) { if (typeof jj.model === 'string' && jj.model.trim() !== '') jc.model = jj.model.trim(); else problems.push('"judge.model" must be a non-empty string'); }
+      if (jj.provider !== undefined) { if (typeof jj.provider === 'string' && jj.provider.trim() !== '') jc.provider = jj.provider.trim(); else problems.push('"judge.provider" must be a non-empty string'); }
+      if (jj.maxDiffBytes !== undefined) { if (typeof jj.maxDiffBytes === 'number' && jj.maxDiffBytes >= 1024) jc.maxDiffBytes = Math.floor(jj.maxDiffBytes); else problems.push('"judge.maxDiffBytes" must be a number of at least 1024'); }
+      if (jj.canBlock !== undefined) { if (typeof jj.canBlock === 'boolean') jc.canBlock = jj.canBlock; else problems.push('"judge.canBlock" must be a boolean'); }
+      if (jj.effort !== undefined) { if (typeof jj.effort === 'string' && (JUDGE_EFFORTS as readonly string[]).includes(jj.effort)) jc.effort = jj.effort as JudgeConfig['effort']; else problems.push(`"judge.effort" must be one of ${JUDGE_EFFORTS.join(', ')}`); }
+      for (const k of Object.keys(jj)) if (!['model', 'provider', 'maxDiffBytes', 'canBlock', 'effort'].includes(k)) problems.push(`unknown key "judge.${k}"`);
+      cfg.judge = jc;
+    } else problems.push('"judge" must be an object (or null to disable)');
+  }
   if (j.rules !== undefined) {
     if (j.rules && typeof j.rules === 'object' && !Array.isArray(j.rules)) {
       for (const [k, v] of Object.entries(j.rules as Record<string, unknown>)) {
@@ -53,7 +69,7 @@ export function parseConfig(raw: string | null | undefined): { cfg: GatekeepConf
       }
     } else problems.push('"rules" must be an object');
   }
-  const known = new Set(['$schema', 'testGlobs', 'extraTestGlobs', 'testConfigGlobs', 'ignore', 'assertionDropTolerance', 'maxBlocks', 'strict', 'rules', 'testCommand', 'testTimeoutMs', 'protectedPaths', 'extraProtectedPaths']);
+  const known = new Set(['$schema', 'testGlobs', 'extraTestGlobs', 'testConfigGlobs', 'ignore', 'assertionDropTolerance', 'maxBlocks', 'strict', 'rules', 'testCommand', 'testTimeoutMs', 'protectedPaths', 'extraProtectedPaths', 'judge']);
   for (const k of Object.keys(j)) if (!known.has(k)) problems.push(`unknown key "${k}"`);
   return { cfg, problems };
 }
@@ -67,6 +83,7 @@ export function defaultConfigText(): string {
     maxBlocks: 3,
     strict: false,
     testCommand: null,
+    judge: null,
     extraTestGlobs: [],
     extraProtectedPaths: [],
     ignore: [],

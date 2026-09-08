@@ -14,12 +14,13 @@ import { runOriginalTests, testRunFindings, type TestRunResult } from './testrun
 import { readTranscript, claimFindings } from './claims.js';
 import { applyOverrides, overridesFromPrompts, overridesFromCli, overridesFromCommits, type Override } from './override.js';
 import { isTestFile } from './rules.js';
-import type { Finding } from './model.js';
+import { runJudge, type JudgeResult } from './judge.js';
+import type { Finding, FileChange } from './model.js';
 
 const require = createRequire(import.meta.url);
 const VERSION: string = (require('../../package.json') as { version: string }).version;
-const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet']);
-const VALUE_FLAGS = ['session', 'base', 'allow', 'harness', 'id', 'task', 'transcript'];
+const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet', 'no-judge']);
+const VALUE_FLAGS = ['session', 'base', 'allow', 'harness', 'id', 'task', 'transcript', 'judge'];
 
 interface Args { _: string[]; flags: Record<string, string | boolean> }
 function parseArgs(argv: string[]): Args {
@@ -49,10 +50,11 @@ function usage(): string {
   return `gatekeep ${VERSION} — independent verification gate for AI coding agents
 
 Usage:
-  gatekeep run [--base <ref>] [--session <id>] [--json] [--fail-on-warn] [--allow <rule,...>]
+  gatekeep run [--base <ref>] [--session <id>] [--json] [--fail-on-warn] [--allow <rule,...>] [--judge <model> | --no-judge]
       Check the working tree against a baseline (default: HEAD, or the session's start snapshot).
       Exit 0 = pass, 1 = blocked, 3 = error. --allow lifts rules for this run (recorded in the verdict);
       commit trailers "gatekeep: allow <rule> -- reason" between --base and HEAD do the same.
+      --judge <model> runs the model-backed review for this run; --no-judge skips the configured one.
   gatekeep hook session-start|prompt|stop [--harness claude-code|codex]
       Entry points wired into the agent's hooks. Reads the hook JSON on stdin.
   gatekeep install [--shared | --global] [--codex]
@@ -91,14 +93,30 @@ async function configFor(root: string, baseTree: string | null, session: Session
   return { cfg, findings };
 }
 
-async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sessionMode: boolean, transcriptPath?: string, task?: string | null): Promise<{ cur: string; result: AnalysisResult; originalTests: TestRunResult | null }> {
+interface Analysis { cur: string; changes: FileChange[]; result: AnalysisResult; originalTests: TestRunResult | null; claim: string | null }
+
+async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sessionMode: boolean, transcriptPath?: string, task?: string | null): Promise<Analysis> {
   const cur = await snapshotWorkingTree(root);
   const changes = await diffTrees(root, base, cur, { shouldLoad: (p) => needsContent(p, cfg.rules), maxBytes: 2 * 1024 * 1024 });
   const result = await analyze(changes, cfg.rules, { exists: (p) => existsSync(path.join(root, p)), sessionMode, task });
   const originalTests = base === cur ? null : await runOriginalTests(root, base, cur, changes, cfg.rules, { testCommand: cfg.testCommand, testTimeoutMs: cfg.testTimeoutMs });
   result.findings.push(...testRunFindings(originalTests, cfg.rules.severities));
-  if (transcriptPath) result.findings.push(...claimFindings(await readTranscript(transcriptPath), changes, cfg.rules.severities, (p) => isTestFile(p, cfg.rules)));
-  return { cur, result, originalTests };
+  const transcript = transcriptPath ? await readTranscript(transcriptPath) : null;
+  if (transcript) result.findings.push(...claimFindings(transcript, changes, cfg.rules.severities, (p) => isTestFile(p, cfg.rules)));
+  return { cur, changes, result, originalTests, claim: transcript?.finalText ?? null };
+}
+
+/**
+ * Model-backed review, after every deterministic finding is in and before overrides are applied. Appends its own
+ * findings and annotates the blocking ones in place; `runJudge` enforces that it can change nothing else.
+ */
+async function judgeStep(root: string, base: string, a: Analysis, cfg: GatekeepConfig, task: string | null, findings: Finding[], flags: Args['flags']): Promise<JudgeResult | null> {
+  if (flags['no-judge'] === true) return null;
+  const jc = typeof flags.judge === 'string' ? { ...(cfg.judge ?? { provider: 'anthropic', maxDiffBytes: 200 * 1024, canBlock: false, effort: 'high' as const }), model: flags.judge } : cfg.judge;
+  if (!jc) return null;
+  const { result, findings: extra } = await runJudge({ root, base, cur: a.cur, changes: a.changes, cfg: jc, task, claim: a.claim, findings, severities: cfg.rules.severities, isTest: (p) => isTestFile(p, cfg.rules), cacheDir: path.join(repoStateDir(root), 'judge') });
+  findings.push(...extra);
+  return result;
 }
 
 /** Protected files hashed straight from disk, so gitignored ones (the default settings.local.json) are covered too. */
@@ -110,13 +128,13 @@ async function protectedHashes(root: string): Promise<Record<string, string | nu
   return out;
 }
 
-function buildVerdict(p: { sessionId: string | null; harness: string | null; base: string; cur: string; task: string | null; findings: Finding[]; result: AnalysisResult; originalTests?: TestRunResult | null; strict: boolean; blockCount: number; t0: number; overrides?: Override[] }): Verdict {
+function buildVerdict(p: { sessionId: string | null; harness: string | null; base: string; cur: string; task: string | null; findings: Finding[]; result: AnalysisResult; originalTests?: TestRunResult | null; judge?: JudgeResult | null; strict: boolean; blockCount: number; t0: number; overrides?: Override[] }): Verdict {
   const used = applyOverrides(p.findings, p.overrides ?? []);
   const decision = decide(p.findings, p.strict);
   return {
     schema: 'gatekeep.verdict.v1', createdAt: new Date().toISOString(), sessionId: p.sessionId, harness: p.harness,
     baseTree: p.base, currentTree: p.cur, task: p.task, decision,
-    checks: { testIntegrity: { status: decision === 'block' ? 'fail' : decision === 'warn' ? 'warn' : 'pass', findings: p.findings, examined: p.result.examined, changedSourceFiles: p.result.changedSourceFiles }, ...(p.originalTests ? { originalTests: p.originalTests } : {}) },
+    checks: { testIntegrity: { status: decision === 'block' ? 'fail' : decision === 'warn' ? 'warn' : 'pass', findings: p.findings, examined: p.result.examined, changedSourceFiles: p.result.changedSourceFiles }, ...(p.originalTests ? { originalTests: p.originalTests } : {}), ...(p.judge ? { judge: p.judge } : {}) },
     blockCount: p.blockCount, durationMs: Date.now() - p.t0, ...(used.length ? { overrides: used } : {}),
   };
 }
@@ -136,7 +154,10 @@ async function cmdRun(args: Args, cwd: string): Promise<number> {
   } else base = session?.baseTree ?? await headTree(root);
   const t0 = Date.now();
   const { cfg, findings: cfgFindings } = await configFor(root, baseForConfig, session);
-  const { cur, result, originalTests } = await runAnalysis(root, base, cfg, session !== null, undefined, session?.prompt ?? null);
+  const a = await runAnalysis(root, base, cfg, session !== null, undefined, session?.prompt ?? null);
+  const { cur, result, originalTests } = a;
+  const findings = [...cfgFindings, ...result.findings];
+  const judge = await judgeStep(root, base, a, cfg, session?.prompt ?? null, findings, args.flags);
   const strict = cfg.strict || args.flags['fail-on-warn'] === true;
   const overrides: Override[] = [
     ...overridesFromCli(typeof args.flags.allow === 'string' ? args.flags.allow : undefined, process.env.USER ?? 'cli'),
@@ -144,7 +165,7 @@ async function cmdRun(args: Args, cwd: string): Promise<number> {
     ...(typeof args.flags.base === 'string' ? await overridesFromCommits(root, args.flags.base) : []),
     ...overridesFromPrompts(session?.prompts ?? (session?.prompt ? [session.prompt] : [])),
   ];
-  const v = buildVerdict({ sessionId, harness: session?.harness ?? null, base, cur, task: session?.prompt ?? null, findings: [...cfgFindings, ...result.findings], result, originalTests, strict, blockCount: session?.blocks ?? 0, t0, overrides });
+  const v = buildVerdict({ sessionId, harness: session?.harness ?? null, base, cur, task: session?.prompt ?? null, findings, result, originalTests, judge, strict, blockCount: session?.blocks ?? 0, t0, overrides });
   const vp = await writeVerdict(root, v);
   if (args.flags.json) console.log(JSON.stringify(v, null, 2));
   else console.log(formatReport(v, { forAgent: false, verdictPath: vp }));
@@ -176,10 +197,13 @@ async function cmdVerify(args: Args, cwd: string): Promise<number> {
   if (!s) throw new UserError(`no session "${args.flags.session}" recorded for this repository`);
   const t0 = Date.now();
   const { cfg, findings: cfgFindings } = await configFor(root, null, s);
-  const { cur, result, originalTests } = await runAnalysis(root, s.baseTree, cfg, true, typeof args.flags.transcript === 'string' ? args.flags.transcript : undefined, s.prompt);
+  const a = await runAnalysis(root, s.baseTree, cfg, true, typeof args.flags.transcript === 'string' ? args.flags.transcript : undefined, s.prompt);
+  const { cur, result, originalTests } = a;
+  const findings = [...cfgFindings, ...result.findings];
+  const judge = await judgeStep(root, s.baseTree, a, cfg, s.prompt, findings, args.flags);
   const overrides: Override[] = [...overridesFromCli(typeof args.flags.allow === 'string' ? args.flags.allow : undefined, process.env.USER ?? 'cli'), ...overridesFromPrompts(s.prompts ?? (s.prompt ? [s.prompt] : []))];
   const strict = cfg.strict || args.flags['fail-on-warn'] === true;
-  const v = buildVerdict({ sessionId: s.id, harness: s.harness, base: s.baseTree, cur, task: s.prompt, findings: [...cfgFindings, ...result.findings], result, originalTests, strict, blockCount: s.blocks, t0, overrides });
+  const v = buildVerdict({ sessionId: s.id, harness: s.harness, base: s.baseTree, cur, task: s.prompt, findings, result, originalTests, judge, strict, blockCount: s.blocks, t0, overrides });
   const vp = await writeVerdict(root, v);
   if (args.flags.json) console.log(JSON.stringify(v, null, 2));
   else console.log(formatReport(v, { forAgent: false, verdictPath: vp }));
@@ -238,7 +262,8 @@ async function stopHook(root: string, sessionId: string, harness: string, input:
     }
     const t0 = Date.now();
     const { cfg, findings: cfgFindings } = await configFor(root, null, s);
-    const { cur, result, originalTests } = await runAnalysis(root, s.baseTree, cfg, true, typeof input.transcript_path === 'string' ? input.transcript_path : undefined, s.prompt);
+    const a = await runAnalysis(root, s.baseTree, cfg, true, typeof input.transcript_path === 'string' ? input.transcript_path : undefined, s.prompt);
+    const { cur, result, originalTests } = a;
     // Protected files compared from disk: catches gitignored hook settings the tree diff cannot see.
     if (s.protectedHashes) {
       const now = await protectedHashes(root);
@@ -250,11 +275,12 @@ async function stopHook(root: string, sessionId: string, harness: string, input:
       }
     }
     const findings = [...stateFindings.filter(() => (cfg.rules.severities['session-state-missing'] ?? 'warn') !== 'off').map((f) => ({ ...f, severity: cfg.rules.severities['session-state-missing'] ?? 'warn' })), ...cfgFindings, ...result.findings];
+    const judge = await judgeStep(root, s.baseTree, a, cfg, s.prompt, findings, {});
     applyOverrides(findings, overridesFromPrompts(s.prompts ?? (s.prompt ? [s.prompt] : [])));
     const decision = decide(findings, cfg.strict);
     void input;
     const overLimit = decision === 'block' && s.blocks >= cfg.maxBlocks;
-    const v = buildVerdict({ sessionId, harness, base: s.baseTree, cur, task: s.prompt, findings, result, originalTests, strict: cfg.strict, blockCount: s.blocks + (decision === 'block' && !overLimit ? 1 : 0), t0, overrides: overridesFromPrompts(s.prompts ?? (s.prompt ? [s.prompt] : [])) });
+    const v = buildVerdict({ sessionId, harness, base: s.baseTree, cur, task: s.prompt, findings, result, originalTests, judge, strict: cfg.strict, blockCount: s.blocks + (decision === 'block' && !overLimit ? 1 : 0), t0, overrides: overridesFromPrompts(s.prompts ?? (s.prompt ? [s.prompt] : [])) });
     const vp = await writeVerdict(root, v);
     s.lastVerdict = vp;
     if (decision === 'block' && !overLimit) {

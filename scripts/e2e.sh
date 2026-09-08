@@ -274,5 +274,34 @@ mkdir -p other && echo x > other/scratch.txt
 node "$CLI" run >/tmp/gk_out 2>&1; code=$?
 check "sparse checkout: run succeeds (exit 0/1, not 3)" '[ $code -ne 3 ]'
 
+echo "== model-backed review (replay provider, no network)"
+J="$E2E/judge"; mkdir -p "$J/app" "$J/tests"; cd "$J"; git init -q -b main
+printf 'def add(a, b):\n    return 0\n' > app/calc.py
+printf 'from app.calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n\ndef test_add_neg():\n    assert add(-1, 1) == 0\n' > tests/test_calc.py
+echo '{"judge": {"model": "claude-opus-5", "provider": "replay"}}' > gatekeep.config.json
+git add -A && git commit -qm base
+printf 'def add(a, b):\n    if a == 2 and b == 3:\n        return 5\n    return 0\n' > app/calc.py
+printf 'from app.calc import add\n\ndef test_add():\n    assert add(2, 3)\n' > tests/test_calc.py
+cat > "$E2E/replay.json" <<'JSON'
+{"model": "replay-model", "raw": {"findings": [{"kind": "special-casing", "file": "app/calc.py", "line": 2, "test": "", "reason": "returns 5 only for (2, 3)"}, {"kind": "task-mismatch", "file": "nope.py", "line": 0, "test": "", "reason": "not a judged file"}], "triage": [{"id": "f1", "verdict": "looks-like-evasion", "reason": "the removed test is the one the fitted code fails"}, {"id": "f1", "verdict": "consistent-with-task", "reason": "duplicate, ignored"}], "summary": "fitted to the remaining test"}}
+JSON
+GATEKEEP_JUDGE_REPLAY="$E2E/replay.json" node "$CLI" run --json >/tmp/gk_out.json 2>/tmp/gk_err; code=$?
+check "judge: run exits 1 (deterministic block stands)" '[ $code -eq 1 ]'
+check "judge: verdict records model, prompt hash and raw output under checks.judge" 'node -e "const v=require(\"/tmp/gk_out.json\");const j=v.checks.judge;process.exit(j.status===\"ran\"&&j.model===\"replay-model\"&&/^[0-9a-f]{64}$/.test(j.promptHash)&&j.raw.includes(\"fitted\")?0:1)"'
+check "judge: its finding is emitted at warn, the unknown file is discarded" 'node -e "const v=require(\"/tmp/gk_out.json\");const f=v.checks.testIntegrity.findings;process.exit(f.filter(x=>x.rule===\"judge-special-casing\"&&x.severity===\"warn\"&&x.file===\"app/calc.py\").length===1&&!f.some(x=>x.file===\"nope.py\")&&v.checks.judge.discarded===1?0:1)"'
+check "judge: the blocking finding is annotated, its severity untouched" 'node -e "const v=require(\"/tmp/gk_out.json\");const f=v.checks.testIntegrity.findings.find(x=>x.rule===\"test-deleted\");process.exit(f&&f.severity===\"block\"&&f.judge&&f.judge.verdict===\"looks-like-evasion\"?0:1)"'
+GATEKEEP_JUDGE_REPLAY="$E2E/replay.json" node "$CLI" run --json >/tmp/gk_out.json 2>/tmp/gk_err
+check "judge: second run on the same trees is served from the cache" 'node -e "const v=require(\"/tmp/gk_out.json\");process.exit(v.checks.judge.status===\"cached\"?0:1)"'
+GATEKEEP_JUDGE_REPLAY="$E2E/replay.json" node "$CLI" run >/tmp/gk_out 2>&1
+check "judge: report shows the review line and the annotation" 'grep -q "model-backed review: replay-model (cached)" /tmp/gk_out && grep -q "judge: looks like evasion" /tmp/gk_out'
+node "$CLI" run --no-judge --json >/tmp/gk_out.json 2>/tmp/gk_err
+check "judge: --no-judge leaves checks.judge out" 'node -e "const v=require(\"/tmp/gk_out.json\");process.exit(v.checks.judge===undefined?0:1)"'
+echo '{"judge": {"model": "claude-opus-5"}}' > gatekeep.config.json
+env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_PROFILE node "$CLI" run --json >/tmp/gk_out.json 2>/tmp/gk_err; code=$?
+check "judge: without credentials the review is skipped with a judge-skipped warning, the gate still decides" 'node -e "const v=require(\"/tmp/gk_out.json\");process.exit(v.checks.judge.status===\"skipped\"&&v.checks.testIntegrity.findings.some(x=>x.rule===\"judge-skipped\"&&x.severity===\"warn\")&&v.decision===\"block\"?0:1)"'
+echo '{"judge": {"model": "", "canBlock": "yes", "bogus": 1}}' > gatekeep.config.json
+node "$CLI" run --no-judge --json >/tmp/gk_out.json 2>/tmp/gk_err
+check "judge: bad judge config is reported as config-invalid" 'node -e "const v=require(\"/tmp/gk_out.json\");const m=v.checks.testIntegrity.findings.filter(x=>x.rule===\"config-invalid\").map(x=>x.message).join(\"|\");process.exit(/judge.model/.test(m)&&/judge.canBlock/.test(m)&&/judge.bogus/.test(m)?0:1)"'
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

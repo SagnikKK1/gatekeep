@@ -8,7 +8,7 @@ import type { FileChange } from './model.js';
 const execFileP = promisify(execFile);
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 /** Read-only object commands do not need the repository index; a nonexistent path keeps a corrupt or mid-write index from failing them. */
-const NO_INDEX = { GIT_INDEX_FILE: path.join(os.tmpdir(), 'gatekeep-no-index') };
+export const NO_INDEX = { GIT_INDEX_FILE: path.join(os.tmpdir(), 'gatekeep-no-index') };
 
 export class GitError extends Error {
   constructor(message: string, public readonly args: string[]) { super(message); }
@@ -178,4 +178,24 @@ async function loadBlob(batch: BlobBatch, tree: string, p: string, maxBytes: num
   if (b.length > maxBytes) return { text: undefined, unreadable: true };
   if (b.subarray(0, 8000).includes(0)) return { text: undefined, unreadable: true }; // binary
   return { text: b.toString('utf8'), unreadable: false };
+}
+
+/**
+ * Unified diff between two trees, split per file and keyed by the new path (old path for deletions).
+ * Read-only: runs without the index. Used by the model-backed review, which reads text rather than parse trees.
+ */
+export async function diffPatches(cwd: string, base: string, cur: string, maxBuffer = 256 * 1024 * 1024): Promise<Map<string, string>> {
+  const out = await git(cwd, ['diff-tree', '-r', '-p', '-M', '--no-color', '--no-ext-diff', base, cur], NO_INDEX, maxBuffer);
+  const patches = new Map<string, string>();
+  const chunks = out.split(/^(?=diff --git )/m).filter((c) => c.startsWith('diff --git '));
+  for (const c of chunks) {
+    const plus = /^\+\+\+ b\/(.+)$/m.exec(c);
+    const minus = /^--- a\/(.+)$/m.exec(c);
+    const head = /^diff --git a\/(.+?) b\/(.+)$/m.exec(c);
+    const p = plus?.[1] ?? (minus ? null : head?.[2]) ?? head?.[2] ?? null;
+    // Deletions have no +++ path: key them by the old one so the caller can still find them.
+    const key = plus ? plus[1]! : (minus?.[1] ?? p);
+    if (key) patches.set(key, c);
+  }
+  return patches;
 }

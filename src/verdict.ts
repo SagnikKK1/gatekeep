@@ -3,6 +3,7 @@ import type { Finding } from './model.js';
 import type { AnalysisResult } from './rules.js';
 import type { TestRunResult } from './testrun.js';
 import type { Override } from './override.js';
+import type { JudgeResult } from './judge.js';
 import { verdictDir, writeAtomic } from './session.js';
 
 export interface Verdict {
@@ -22,6 +23,8 @@ export interface Verdict {
       changedSourceFiles: string[];
     };
     originalTests?: TestRunResult;
+    /** Model-backed review: model id, prompt hash and raw output, so the run is auditable. */
+    judge?: JudgeResult;
   };
   blockCount: number;
   durationMs: number;
@@ -63,6 +66,13 @@ export function formatReport(v: Verdict, opts: { forAgent: boolean; verdictPath?
   lines.push(`GATEKEEP ${head} — test integrity: ${blocks.length} blocking, ${warns.length} warning(s); ${ex} test file(s) examined, ${src} source file(s) changed.`);
   const ot = v.checks.originalTests;
   if (ot) lines.push(`  original tests vs current code: ${ot.status}${ot.originalExit !== null ? ` (exit ${ot.originalExit}${ot.currentExit !== null ? `, edited tests exit ${ot.currentExit}` : ''})` : ''}${ot.reason ? ` — ${ot.reason}` : ''}, ${(ot.durationMs / 1000).toFixed(1)}s`);
+  const jg = v.checks.judge;
+  if (jg) {
+    const u = jg.usage ? `, ${jg.usage.input + jg.usage.cacheRead + jg.usage.cacheWrite} in / ${jg.usage.output} out tokens` : '';
+    const detail = jg.status === 'ran' || jg.status === 'cached' ? `${jg.model}${jg.status === 'cached' ? ' (cached)' : ''}: ${jg.emitted} finding(s), ${jg.annotated} annotated, ${jg.filesJudged} file(s)${jg.truncated.length ? `, ${jg.truncated.length} truncated` : ''}${jg.omittedFiles ? `, ${jg.omittedFiles} omitted` : ''}${u}` : `${jg.status}${jg.reason ? ` — ${jg.reason}` : ''}`;
+    lines.push(`  model-backed review: ${detail}, ${(jg.durationMs / 1000).toFixed(1)}s`);
+    if (jg.summary) lines.push(`      ${jg.summary.slice(0, 300)}`);
+  }
   const clip = (t: string, n: number) => (t.length > n ? t.slice(0, n - 1) + '…' : t);
   const fmt = (x: Finding) => {
     const loc = clip(x.line ? `${x.file}:${x.line}` : x.file, 200);
@@ -70,6 +80,7 @@ export function formatReport(v: Verdict, opts: { forAgent: boolean; verdictPath?
     let s = `  [${x.severity}] ${x.rule}  ${loc}${t}\n      ${clip(x.message, 400)}`;
     if (x.before) s += `\n      before: ${x.before.slice(0, 160)}`;
     if (x.after) s += `\n      after:  ${x.after.slice(0, 160)}`;
+    if (x.judge) s += `\n      judge: ${x.judge.verdict === 'looks-like-evasion' ? 'looks like evasion' : 'consistent with the task'} — ${clip(x.judge.reason, 300)}`;
     return s;
   };
   const ordered = [...blocks, ...warns];

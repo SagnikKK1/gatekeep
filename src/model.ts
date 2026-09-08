@@ -95,4 +95,6 @@ export interface Finding {
   after?: string;
   /** Set when an override lifted this finding: who granted it and how. The finding no longer decides the verdict. */
   overridden?: string;
+  /** Model-backed triage of a deterministic finding. Annotation only: it never changes the severity or the decision. */
+  judge?: { verdict: 'consistent-with-task' | 'looks-like-evasion'; reason: string };
 }
