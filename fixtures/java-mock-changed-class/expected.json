@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "mock-on-changed-module",
+      "file": "src/test/java/CalcTest.java",
+      "test": "CalcTest.adds"
+    }
+  ]
+}

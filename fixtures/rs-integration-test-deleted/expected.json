@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "test-file-deleted",
+      "file": "tests/calc_test.rs"
+    }
+  ]
+}

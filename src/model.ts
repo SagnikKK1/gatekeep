@@ -93,4 +93,6 @@ export interface Finding {
   message: string;
   before?: string;
   after?: string;
+  /** Set when an override lifted this finding: who granted it and how. The finding no longer decides the verdict. */
+  overridden?: string;
 }

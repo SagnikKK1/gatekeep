@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "test-skipped",
+      "file": "spec/calc_spec.rb",
+      "test": "Calc > .add > adds"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "findings": [
+    {
+      "rule": "early-exit-added",
+      "file": "src/calc.rs",
+      "test": "tests::adds"
+    },
+    {
+      "rule": "assertion-unreachable",
+      "file": "src/calc.rs",
+      "test": "tests::adds"
+    },
+    {
+      "rule": "assertions-removed",
+      "file": "src/calc.rs",
+      "test": "tests::adds"
+    }
+  ]
+}

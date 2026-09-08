@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "test-skipped",
+      "file": "src/test/java/CalcTest.java",
+      "test": "CalcTest.adds"
+    }
+  ]
+}

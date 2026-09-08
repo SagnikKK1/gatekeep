@@ -7,7 +7,7 @@ const TS = require('@vscode/tree-sitter-wasm') as typeof import('@vscode/tree-si
 
 export type SyntaxNode = import('@vscode/tree-sitter-wasm').Node;
 export type Tree = import('@vscode/tree-sitter-wasm').Tree;
-export type Lang = 'python' | 'javascript' | 'typescript' | 'tsx' | 'go';
+export type Lang = 'python' | 'javascript' | 'typescript' | 'tsx' | 'go' | 'rust' | 'java' | 'ruby';
 
 // Resolve through the package itself so hoisted installs (npm i -D gatekeep) still find the wasm files.
 const wasmDir = path.join(path.dirname(require.resolve('@vscode/tree-sitter-wasm/package.json')), 'wasm');

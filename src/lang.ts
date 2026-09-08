@@ -9,6 +9,9 @@ export function langFor(file: string): Lang | null {
     case '.ts': case '.mts': case '.cts': return 'typescript';
     case '.tsx': return 'tsx';
     case '.go': return 'go';
+    case '.rs': return 'rust';
+    case '.java': return 'java';
+    case '.rb': return 'ruby';
     default: return null;
   }
 }
@@ -46,6 +49,9 @@ export const DEFAULT_TEST_GLOBS = [
   '**/*.test.{js,jsx,ts,tsx,mjs,cjs,mts,cts}', '**/*.spec.{js,jsx,ts,tsx,mjs,cjs,mts,cts}',
   '**/__tests__/**/*.{js,jsx,ts,tsx,mjs,cjs}', '**/test/**/*.{js,jsx,ts,tsx,mjs,cjs}', '**/tests/**/*.{js,jsx,ts,tsx,mjs,cjs}', '**/spec/**/*.{js,jsx,ts,tsx,mjs,cjs}',
   '**/*_test.go',
+  '**/tests/**/*.rs', '**/benches/**/*.rs',
+  '**/src/test/**/*.java', '**/*Test.java', '**/*Tests.java', '**/*IT.java', '**/Test*.java',
+  '**/spec/**/*_spec.rb', '**/test/**/*_test.rb', '**/test_*.rb',
 ];
 
 export const DEFAULT_TEST_CONFIG_GLOBS = [
@@ -143,5 +149,7 @@ export function isCollectedName(p: string): boolean {
   if (/\.pyi?$/.test(base)) return /^test_.*\.py$|_test\.py$|^conftest\.py$/.test(base);
   if (/\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$/.test(base)) return /\.(test|spec)\.[cm]?[jt]sx?$/.test(base) || /(^|\/)__tests__\//.test(norm) || /(^|\/)(test|tests|spec)\//.test(norm) && !/\.d\.ts$/.test(base) && /^(test|spec|.*[._-](test|spec))\./.test(base);
   if (base.endsWith('.go')) return base.endsWith('_test.go');
+  if (base.endsWith('.java')) return /(Test|Tests|IT)\.java$|^Test\w*\.java$/.test(base) || /(^|\/)src\/test\//.test(norm);
+  if (base.endsWith('.rb')) return /_spec\.rb$|_test\.rb$|^test_.*\.rb$/.test(base);
   return true;
 }

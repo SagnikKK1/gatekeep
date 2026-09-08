@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "test-focused",
+      "file": "spec/calc_spec.rb",
+      "test": "Calc > .add > adds zero"
+    }
+  ]
+}

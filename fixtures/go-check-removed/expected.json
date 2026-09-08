@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "assertions-removed",
+      "file": "calc/calc_test.go",
+      "test": "TestAdd"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "test-deleted",
+      "file": "spec/calc_spec.rb",
+      "test": "Calc > .add > adds zero"
+    }
+  ]
+}

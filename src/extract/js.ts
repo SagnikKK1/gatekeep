@@ -283,7 +283,10 @@ function isNestedFn(n: SyntaxNode, body: SyntaxNode): boolean {
       const p = cur.parent;
       const isCallbackArg = !!p && (p.type === 'arguments' || (p.type === 'parenthesized_expression' && p.parent?.type === 'call_expression'));
       const isIife = !!p && p.type === 'call_expression' && p.childForFieldName('function')?.id === cur.id;
-      if (!isCallbackArg && !isIife) return true;
+      // stored in a variable (or declared) and invoked somewhere in the body: reachable
+      const nm = cur.type === 'function_declaration' ? cur.childForFieldName('name')?.text : p?.type === 'variable_declarator' ? p.childForFieldName('name')?.text : p?.type === 'assignment_expression' ? p.childForFieldName('left')?.text : undefined;
+      const invoked = !!nm && /^[\w$]+$/.test(nm) && new RegExp(`(^|[^\\w$.])${nm}\\s*\\(`).test(body.text.replace(cur.text, ''));
+      if (!isCallbackArg && !isIife && !invoked) return true;
     }
     cur = cur.parent;
   }

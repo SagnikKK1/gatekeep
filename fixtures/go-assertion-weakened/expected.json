@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "assertion-weakened",
+      "file": "calc/calc_test.go",
+      "test": "TestAdd"
+    }
+  ]
+}

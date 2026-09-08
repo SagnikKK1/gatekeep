@@ -1,0 +1,19 @@
+{
+  "findings": [
+    {
+      "rule": "early-exit-added",
+      "file": "calc/calc_test.go",
+      "test": "TestAdd"
+    },
+    {
+      "rule": "assertion-unreachable",
+      "file": "calc/calc_test.go",
+      "test": "TestAdd"
+    },
+    {
+      "rule": "assertions-removed",
+      "file": "calc/calc_test.go",
+      "test": "TestAdd"
+    }
+  ]
+}
