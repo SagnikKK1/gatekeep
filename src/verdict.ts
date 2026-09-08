@@ -68,7 +68,7 @@ export function formatReport(v: Verdict, opts: { forAgent: boolean; verdictPath?
   if (ot) lines.push(`  original tests vs current code: ${ot.status}${ot.originalExit !== null ? ` (exit ${ot.originalExit}${ot.currentExit !== null ? `, edited tests exit ${ot.currentExit}` : ''})` : ''}${ot.reason ? ` — ${ot.reason}` : ''}, ${(ot.durationMs / 1000).toFixed(1)}s`);
   const jg = v.checks.judge;
   if (jg) {
-    const u = jg.usage ? `, ${jg.usage.input + jg.usage.cacheRead + jg.usage.cacheWrite} in / ${jg.usage.output} out tokens` : '';
+    const u = jg.usage ? `, ${jg.usage.input + jg.usage.cacheRead + jg.usage.cacheWrite} in / ${jg.usage.output} out tokens${jg.usage.costUsd !== undefined ? ` (~$${jg.usage.costUsd.toFixed(3)} est.)` : ''}` : '';
     const detail = jg.status === 'ran' || jg.status === 'cached' ? `${jg.model}${jg.status === 'cached' ? ' (cached)' : ''}: ${jg.emitted} finding(s), ${jg.annotated} annotated, ${jg.filesJudged} file(s)${jg.truncated.length ? `, ${jg.truncated.length} truncated` : ''}${jg.omittedFiles ? `, ${jg.omittedFiles} omitted` : ''}${u}` : `${jg.status}${jg.reason ? ` — ${jg.reason}` : ''}`;
     lines.push(`  model-backed review: ${detail}, ${(jg.durationMs / 1000).toFixed(1)}s`);
     if (jg.summary) lines.push(`      ${jg.summary.slice(0, 300)}`);

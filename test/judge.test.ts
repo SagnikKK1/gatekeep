@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildPrompt, promptHash, parseOutput, applyOutput, collectFiles, runJudge, SYSTEM_PROMPT, JudgeUnavailable, type JudgeInput, type JudgeConfig, type JudgeProvider } from '../src/judge.js';
+import { buildPrompt, promptHash, parseOutput, applyOutput, collectFiles, runJudge, parseClaudeCodeResult, providers, SYSTEM_PROMPT, JudgeUnavailable, type JudgeInput, type JudgeConfig, type JudgeProvider } from '../src/judge.js';
 import type { Finding } from '../src/model.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -150,4 +150,18 @@ test('runJudge: not-needed without test or source changes; cache by tree pair; s
   const r7 = await runJudge({ ...common, base, cur: base, changes: [], findings: [] });
   assert.equal(r7.result.status, 'not-needed');
   await fs.rm(root, { recursive: true, force: true });
+});
+
+test('claude -p results: structured output wins, the requested model is picked out of modelUsage, errors are classified', () => {
+  const ok = parseClaudeCodeResult(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '{"findings": []}', structured_output: { findings: [], triage: [], summary: 's' },
+    total_cost_usd: 0.0074, usage: { input_tokens: 12, output_tokens: 40, cache_read_input_tokens: 3, cache_creation_input_tokens: 1 }, modelUsage: { 'claude-haiku-4-5-20251001': {}, 'claude-opus-5': {} } }), 'claude-opus-5');
+  assert.equal(ok.model, 'claude-opus-5');
+  assert.deepEqual(JSON.parse(ok.raw), { findings: [], triage: [], summary: 's' });
+  assert.deepEqual(ok.usage, { input: 12, output: 40, cacheRead: 3, cacheWrite: 1, costUsd: 0.0074 });
+  const textOnly = parseClaudeCodeResult(JSON.stringify({ subtype: 'success', is_error: false, result: '{"findings":[],"triage":[],"summary":""}', modelUsage: {} }), 'claude-opus-5');
+  assert.equal(textOnly.model, 'claude-opus-5'); assert.ok(parseOutput(textOnly.raw));
+  assert.throws(() => parseClaudeCodeResult(JSON.stringify({ subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' }), 'm'), JudgeUnavailable);
+  assert.throws(() => parseClaudeCodeResult(JSON.stringify({ subtype: 'error_max_turns', is_error: true, errors: ['Reached maximum number of turns (3)'] }), 'm'), /maximum number of turns/);
+  assert.throws(() => parseClaudeCodeResult('Warning: something\n', 'm'), /other than JSON/);
+  assert.deepEqual(Object.keys(providers).sort(), ['anthropic', 'auto', 'claude-code', 'replay']);
 });

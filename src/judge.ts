@@ -5,7 +5,7 @@ import type { FileChange, Finding, Severity } from './model.js';
 import { diffPatches } from './git.js';
 import { langFor } from './lang.js';
 import { writeAtomic } from './session.js';
-import type { Message } from '@anthropic-ai/sdk/resources/messages/messages.js';
+import type Anthropic from '@anthropic-ai/sdk';
 
 /**
  * Model-backed review: a second layer over the deterministic rules. One hard rule, enforced here and not in the
@@ -20,7 +20,11 @@ export const RUBRIC_VERSION = 1;
 
 export interface JudgeConfig {
   model: string;
-  /** `anthropic` (the default) or `replay` (a recorded response from GATEKEEP_JUDGE_REPLAY, for tests). */
+  /**
+   * `auto` (the default): the Anthropic SDK when ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is set, otherwise Claude Code
+   * (`claude -p`, which runs on the user's login or CLAUDE_CODE_OAUTH_TOKEN), otherwise the SDK's own profile lookup.
+   * `anthropic`, `claude-code`, or `replay` (a recorded response from GATEKEEP_JUDGE_REPLAY, for tests) pick one explicitly.
+   */
   provider: string;
   maxDiffBytes: number;
   /** Judge-emitted warnings become blocks. Deterministic findings are never touched either way. */
@@ -30,7 +34,7 @@ export interface JudgeConfig {
 
 /** One call. Other providers implement this signature and register under their name in `providers`. */
 export interface JudgeRequest { model: string; effort: JudgeConfig['effort']; system: string; user: string; schema: Record<string, unknown> }
-export interface JudgeResponse { model: string; raw: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } }
+export interface JudgeResponse { model: string; raw: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd?: number } }
 export type JudgeProvider = (req: JudgeRequest) => Promise<JudgeResponse>;
 
 /** Thrown by a provider when it has nothing to call with: the judge is skipped, the gate is not failed. */
@@ -76,6 +80,9 @@ const RULE_FOR: Record<JudgeOutputFinding['kind'], string> = { 'test-weakened': 
 const MAX_FILES = 200;
 const MIN_PER_FILE = 2048;
 const REASON_MAX = 600;
+/** Well under the 10-minute hook budget, which the original-tests run may already be using part of. */
+const SDK_TIMEOUT_MS = 2 * 60 * 1000;
+const CLAUDE_CODE_TIMEOUT_MS = 4 * 60 * 1000;
 
 export const OUTPUT_SCHEMA: Record<string, unknown> = {
   type: 'object',
@@ -134,6 +141,7 @@ Cite file paths exactly as given in the <diff file="..."> attributes and line nu
 export function buildPrompt(input: JudgeInput): { user: string; findingIds: Map<string, Finding> } {
   const findingIds = new Map<string, Finding>();
   const esc = (s: string) => s.replace(/</g, '&lt;');
+  const escAttr = (s: string) => esc(s).replace(/"/g, '&quot;');
   const parts: string[] = [];
   parts.push(input.task ? `<task>\n${esc(input.task)}\n</task>` : '<task>(no task statement was recorded for this session)</task>');
   parts.push(input.claim ? `<claim source="agent final message" trust="untrusted">\n${esc(input.claim.slice(0, 8000))}\n</claim>` : '<claim>(no final message available)</claim>');
@@ -144,7 +152,7 @@ export function buildPrompt(input: JudgeInput): { user: string; findingIds: Map<
   });
   parts.push(`<findings>\n${esc(JSON.stringify(rows, null, 1))}\n</findings>`);
   for (const f of input.files) {
-    const attrs = `file="${esc(f.path)}" kind="${f.kind}"${f.shown < f.total ? ` truncated="${f.shown} of ${f.total} bytes shown"` : ''}`;
+    const attrs = `file="${escAttr(f.path)}" kind="${f.kind}"${f.shown < f.total ? ` truncated="${f.shown} of ${f.total} bytes shown"` : ''}`;
     parts.push(`<diff ${attrs}>\n${esc(f.diff)}\n</diff>`);
   }
   if (input.omittedFiles > 0) parts.push(`<note>${input.omittedFiles} more changed file(s) were omitted to stay within the size budget.</note>`);
@@ -278,8 +286,9 @@ export async function runJudge(o: RunJudgeOptions): Promise<{ result: JudgeResul
   const truncated = files.filter((f) => f.shown < f.total).map((f) => ({ path: f.path, shown: f.shown, total: f.total }));
   const base: Partial<JudgeResult> = { promptHash: hash, filesJudged: files.length, omittedFiles: omitted, truncated };
 
-  // Cache by tree pair + task + model: a repeated stop with nothing changed costs nothing.
-  const cacheKey = createHash('sha256').update(`${RUBRIC_VERSION}\n${o.base}\n${o.cur}\n${o.cfg.model}\n${o.task ?? ''}`).digest('hex');
+  // Cache by prompt hash plus provider: the hash already covers the trees, the task, the claim, the findings (so triage
+  // ids line up) and the model; the provider is added so a replay or a switched backend never serves another's answer.
+  const cacheKey = createHash('sha256').update(`${hash}\n${o.cfg.provider}`).digest('hex');
   const cacheFile = o.cacheDir ? path.join(o.cacheDir, `${cacheKey}.json`) : null;
   let response: JudgeResponse | null = null, cached = false;
   if (cacheFile) {
@@ -312,9 +321,9 @@ export async function runJudge(o: RunJudgeOptions): Promise<{ result: JudgeResul
 export const anthropicProvider: JudgeProvider = async (req) => {
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
   let client: InstanceType<typeof Anthropic>;
-  try { client = new Anthropic({ maxRetries: 2, timeout: 10 * 60 * 1000 }); }
+  try { client = new Anthropic({ maxRetries: 1, timeout: SDK_TIMEOUT_MS }); }
   catch (e) { throw new JudgeUnavailable(`no credentials (${(e as Error).message}); set ANTHROPIC_API_KEY or run \`ant auth login\``); }
-  let msg: Message;
+  let msg: Anthropic.Message;
   try {
     const stream = client.messages.stream({
       model: req.model,
@@ -341,6 +350,61 @@ export const anthropicProvider: JudgeProvider = async (req) => {
   return { model: msg.model, raw, usage: { input: msg.usage.input_tokens, output: msg.usage.output_tokens, cacheRead: msg.usage.cache_read_input_tokens ?? 0, cacheWrite: msg.usage.cache_creation_input_tokens ?? 0 } };
 };
 
+/**
+ * Claude Code as the model: `claude -p` in headless mode. Runs on the user's Claude Code login or CLAUDE_CODE_OAUTH_TOKEN
+ * (from `claude setup-token`), so a subscription can back the judge. The child loads no settings (so no hooks: gatekeep
+ * itself is a hook), has no tools, gets the rubric as its whole system prompt, and is forced through the schema.
+ * The prompt goes over stdin because a diff can exceed the per-argument size limit.
+ */
+export const claudeCodeProvider: JudgeProvider = async (req) => {
+  const { execFile } = await import('node:child_process');
+  const args = ['-p', '--setting-sources', '', '--system-prompt', req.system, '--tools', '', '--max-turns', '3', '--no-session-persistence',
+    '--model', req.model, '--effort', req.effort, '--output-format', 'json', '--json-schema', JSON.stringify(req.schema)];
+  const env = { ...process.env, GATEKEEP_JUDGE_CHILD: '1' };
+  const stdout = await new Promise<string>((resolve, reject) => {
+    const child = execFile('claude', args, { env, timeout: CLAUDE_CODE_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 * 1024 }, (err, out, errOut) => {
+      const text = String(out ?? '');
+      if (err) {
+        const e = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string };
+        if (e.code === 'ENOENT') return reject(new JudgeUnavailable('the `claude` command is not on PATH; install Claude Code or set judge.provider to "anthropic"'));
+        if (e.killed || e.signal === 'SIGKILL') return reject(new Error(`claude -p timed out after ${CLAUDE_CODE_TIMEOUT_MS / 1000}s`));
+        if (text.trim().startsWith('{')) return resolve(text); // a non-zero exit with a JSON result: let the parser explain it
+        return reject(new Error(`claude -p failed (${e.code ?? 'error'}): ${String(errOut || text).trim().slice(0, 300)}`));
+      }
+      resolve(text);
+    });
+    child.stdin?.on('error', () => { /* the child exited before reading; the callback reports it */ });
+    child.stdin?.end(req.user);
+  });
+  return parseClaudeCodeResult(stdout, req.model);
+};
+
+/** The `--output-format json` result of `claude -p`, reduced to a JudgeResponse. Exported for tests. */
+export function parseClaudeCodeResult(stdout: string, requested: string): JudgeResponse {
+  let j: Record<string, unknown>;
+  try { j = JSON.parse(stdout) as Record<string, unknown>; } catch { throw new Error(`claude -p returned something other than JSON: ${stdout.trim().slice(0, 200)}`); }
+  const text = typeof j.result === 'string' ? j.result : '';
+  if (j.is_error === true || j.subtype !== 'success') {
+    const msg = [...(Array.isArray(j.errors) ? (j.errors as unknown[]).map(String) : []), text].filter(Boolean).join('; ') || `claude -p failed (${String(j.subtype ?? 'unknown')})`;
+    if (/not logged in|\/login|authentication|invalid api key|oauth token/i.test(msg)) throw new JudgeUnavailable(`Claude Code is not logged in (${msg.slice(0, 120)}); run \`claude\` and /login, or set CLAUDE_CODE_OAUTH_TOKEN from \`claude setup-token\``);
+    throw new Error(msg.slice(0, 300));
+  }
+  const raw = j.structured_output !== undefined ? JSON.stringify(j.structured_output) : text;
+  const models = Object.keys((j.modelUsage as Record<string, unknown> | undefined) ?? {});
+  const model = models.find((m) => m.startsWith(requested)) ?? models.find((m) => !/haiku/.test(m)) ?? requested;
+  const u = (j.usage as Record<string, number> | undefined) ?? {};
+  const cost = typeof j.total_cost_usd === 'number' ? j.total_cost_usd : undefined;
+  return { model, raw, usage: { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, ...(cost !== undefined ? { costUsd: cost } : {}) } };
+}
+
+/** `auto`: an API credential in the environment wins; otherwise Claude Code if it is installed; otherwise the SDK's profile lookup. */
+export const autoProvider: JudgeProvider = async (req) => {
+  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) return anthropicProvider(req);
+  const { execFile } = await import('node:child_process');
+  const hasClaude = await new Promise<boolean>((resolve) => execFile('claude', ['--version'], { timeout: 15000 }, (err) => resolve(!err)));
+  return hasClaude ? claudeCodeProvider(req) : anthropicProvider(req);
+};
+
 /** Test provider: replays a recorded response from the file named by GATEKEEP_JUDGE_REPLAY. */
 export const replayProvider: JudgeProvider = async (req) => {
   const file = process.env.GATEKEEP_JUDGE_REPLAY;
@@ -352,4 +416,4 @@ export const replayProvider: JudgeProvider = async (req) => {
   return { model: pick.model ?? `replay:${req.model}`, raw: typeof pick.raw === 'string' ? pick.raw : JSON.stringify(pick.raw) };
 };
 
-export const providers: Record<string, JudgeProvider> = { anthropic: anthropicProvider, replay: replayProvider };
+export const providers: Record<string, JudgeProvider> = { auto: autoProvider, anthropic: anthropicProvider, 'claude-code': claudeCodeProvider, replay: replayProvider };

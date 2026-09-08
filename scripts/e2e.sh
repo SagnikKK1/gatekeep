@@ -296,12 +296,22 @@ GATEKEEP_JUDGE_REPLAY="$E2E/replay.json" node "$CLI" run >/tmp/gk_out 2>&1
 check "judge: report shows the review line and the annotation" 'grep -q "model-backed review: replay-model (cached)" /tmp/gk_out && grep -q "judge: looks like evasion" /tmp/gk_out'
 node "$CLI" run --no-judge --json >/tmp/gk_out.json 2>/tmp/gk_err
 check "judge: --no-judge leaves checks.judge out" 'node -e "const v=require(\"/tmp/gk_out.json\");process.exit(v.checks.judge===undefined?0:1)"'
-echo '{"judge": {"model": "claude-opus-5"}}' > gatekeep.config.json
-env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_PROFILE node "$CLI" run --json >/tmp/gk_out.json 2>/tmp/gk_err; code=$?
+echo '{"judge": {"model": "claude-opus-5", "provider": "anthropic"}}' > gatekeep.config.json
+env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_PROFILE -u CLAUDE_CODE_OAUTH_TOKEN node "$CLI" run --json >/tmp/gk_out.json 2>/tmp/gk_err; code=$?
 check "judge: without credentials the review is skipped with a judge-skipped warning, the gate still decides" 'node -e "const v=require(\"/tmp/gk_out.json\");process.exit(v.checks.judge.status===\"skipped\"&&v.checks.testIntegrity.findings.some(x=>x.rule===\"judge-skipped\"&&x.severity===\"warn\")&&v.decision===\"block\"?0:1)"'
+echo '{"judge": {"model": "claude-opus-5", "provider": "claude-code"}}' > gatekeep.config.json
+mkdir -p "$E2E/bin" && ln -sf "$(command -v node)" "$E2E/bin/node" && ln -sf "$(command -v git)" "$E2E/bin/git"
+PATH="$E2E/bin:/usr/bin:/bin" node "$CLI" run --json >/tmp/gk_out.json 2>/tmp/gk_err
+check "judge: claude-code provider without the claude command is skipped, not failed" 'node -e "const v=require(\"/tmp/gk_out.json\");process.exit(v.checks.judge.status===\"skipped\"&&/not on PATH/.test(v.checks.judge.reason)&&v.decision===\"block\"?0:1)"'
 echo '{"judge": {"model": "", "canBlock": "yes", "bogus": 1}}' > gatekeep.config.json
 node "$CLI" run --no-judge --json >/tmp/gk_out.json 2>/tmp/gk_err
 check "judge: bad judge config is reported as config-invalid" 'node -e "const v=require(\"/tmp/gk_out.json\");const m=v.checks.testIntegrity.findings.filter(x=>x.rule===\"config-invalid\").map(x=>x.message).join(\"|\");process.exit(/judge.model/.test(m)&&/judge.canBlock/.test(m)&&/judge.bogus/.test(m)?0:1)"'
+
+GATEKEEP_JUDGE_CHILD=1 out=$(echo '{"session_id":"child","cwd":"'"$J"'"}' | GATEKEEP_JUDGE_CHILD=1 node "$CLI" hook stop 2>&1); code=$?
+check "judge: a hook inside the judge's own Claude Code child exits 0 immediately (no recursion)" '[ $code -eq 0 ] && [ -z "$out" ]'
+echo '{"judge": {"model": "claude-opus-5", "provider": "nope"}}' > gatekeep.config.json
+node "$CLI" run --json >/tmp/gk_out.json 2>/tmp/gk_err
+check "judge: unknown provider is skipped with a judge-skipped warning" 'node -e "const v=require(\"/tmp/gk_out.json\");process.exit(v.checks.judge.status===\"skipped\"&&/unknown judge provider/.test(v.checks.judge.reason)?0:1)"'
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

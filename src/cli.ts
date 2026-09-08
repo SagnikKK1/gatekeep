@@ -112,7 +112,7 @@ async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sess
  */
 async function judgeStep(root: string, base: string, a: Analysis, cfg: GatekeepConfig, task: string | null, findings: Finding[], flags: Args['flags']): Promise<JudgeResult | null> {
   if (flags['no-judge'] === true) return null;
-  const jc = typeof flags.judge === 'string' ? { ...(cfg.judge ?? { provider: 'anthropic', maxDiffBytes: 200 * 1024, canBlock: false, effort: 'high' as const }), model: flags.judge } : cfg.judge;
+  const jc = typeof flags.judge === 'string' ? { ...(cfg.judge ?? { provider: 'auto', maxDiffBytes: 200 * 1024, canBlock: false, effort: 'high' as const }), model: flags.judge } : cfg.judge;
   if (!jc) return null;
   const { result, findings: extra } = await runJudge({ root, base, cur: a.cur, changes: a.changes, cfg: jc, task, claim: a.claim, findings, severities: cfg.rules.severities, isTest: (p) => isTestFile(p, cfg.rules), cacheDir: path.join(repoStateDir(root), 'judge') });
   findings.push(...extra);
@@ -211,6 +211,8 @@ async function cmdVerify(args: Args, cwd: string): Promise<number> {
 }
 
 async function cmdHook(args: Args, cwd: string): Promise<number> {
+  // The judge may run Claude Code headless; that child loads no settings, but if it ever did, its hooks must not re-enter the gate.
+  if (process.env.GATEKEEP_JUDGE_CHILD === '1') return 0;
   const event = args._[1];
   const harness = typeof args.flags.harness === 'string' ? args.flags.harness : 'claude-code';
   const input = await readStdinJSON();
