@@ -1,0 +1,16 @@
+{
+  "findings": [
+    {
+      "rule": "test-deleted",
+      "file": "tests/calc.test.ts",
+      "test": "adds",
+      "severity": "warn"
+    },
+    {
+      "rule": "test-deleted",
+      "file": "tests/calc.test.ts",
+      "test": "divides",
+      "severity": "warn"
+    }
+  ]
+}

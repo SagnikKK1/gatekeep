@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "constant-override-on-changed-module",
+      "file": "tests/test_api.py",
+      "test": "test_x"
+    }
+  ]
+}

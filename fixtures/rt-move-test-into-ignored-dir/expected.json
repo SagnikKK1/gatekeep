@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "test-file-moved-out",
+      "file": "vendor/test_calc.py"
+    }
+  ]
+}

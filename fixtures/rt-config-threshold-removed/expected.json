@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "test-config-changed",
+      "file": "pytest.ini"
+    }
+  ]
+}

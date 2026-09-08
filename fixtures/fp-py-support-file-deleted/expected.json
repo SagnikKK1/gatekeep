@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "test-support-file-deleted",
+      "file": "tests/fixtures/sample_data.py"
+    }
+  ]
+}

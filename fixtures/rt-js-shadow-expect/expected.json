@@ -1,0 +1,18 @@
+{
+  "findings": [
+    {
+      "rule": "assertion-shadowed",
+      "file": "tests/calc.test.ts"
+    },
+    {
+      "rule": "assertions-removed",
+      "file": "tests/calc.test.ts",
+      "test": "adds"
+    },
+    {
+      "rule": "assertions-removed",
+      "file": "tests/calc.test.ts",
+      "test": "divides"
+    }
+  ]
+}

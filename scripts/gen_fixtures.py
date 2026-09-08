@@ -373,3 +373,170 @@ case('honest-js-supertest-bracket-method',
 print('fixtures:', len(list(ROOT.iterdir())))
 
 
+# ---------- round 3: reviewer findings ----------
+CALC = "def add(a, b):\n    return 0\n\ndef divide(a, b):\n    return 0\n"
+CALC_FIXED = "def add(a, b):\n    return a + b\n\ndef divide(a, b):\n    return a / b\n"
+CT = 'tests/test_calc.py'; CS = 'app/calc.py'
+CALC_TEST = "from app.calc import add, divide\n\ndef test_add():\n    assert add(2, 3) == 5\n\ndef test_divide():\n    assert divide(6, 3) == 2\n"
+JCALC = "export function add(a, b) { return 0; }\nexport function divide(a, b) { return 0; }\n"
+JCT = 'tests/calc.test.ts'; JCS = 'src/calc.ts'
+JCALC_TEST = "import { add, divide } from '../src/calc';\n\nit('adds', () => {\n  expect(add(2, 3)).toBe(5);\n});\nit('divides', () => {\n  expect(divide(6, 3)).toBe(2);\n});\n"
+
+# red team: dead code
+case('rt-py-early-return', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST.replace("def test_add():\n", "def test_add():\n    return\n"), CS: CALC},
+  [{'rule': 'early-exit-added', 'file': CT, 'test': 'test_add'}, {'rule': 'assertion-unreachable', 'file': CT, 'test': 'test_add'}, {'rule': 'assertions-removed', 'file': CT, 'test': 'test_add'}])
+case('rt-py-if-false', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST.replace("    assert add(2, 3) == 5", "    if False:\n        assert add(2, 3) == 5"), CS: CALC},
+  [{'rule': 'assertion-unreachable', 'file': CT, 'test': 'test_add'}, {'rule': 'assertions-removed', 'file': CT, 'test': 'test_add'}])
+case('rt-py-env-gated-return', {CT: CALC_TEST, CS: CALC}, {CT: "import os\n" + CALC_TEST.replace("def test_add():\n", "def test_add():\n    if not os.environ.get('RUN_REAL'):\n        return\n"), CS: CALC},
+  [{'rule': 'early-exit-added', 'file': CT, 'test': 'test_add'}])
+case('rt-js-early-return', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("it('adds', () => {\n", "it('adds', () => {\n  return;\n"), JCS: JCALC},
+  [{'rule': 'early-exit-added', 'file': JCT, 'test': 'adds'}, {'rule': 'assertion-unreachable', 'file': JCT, 'test': 'adds'}, {'rule': 'assertions-removed', 'file': JCT, 'test': 'adds'}])
+case('rt-js-if-false', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("  expect(add(2, 3)).toBe(5);", "  if (false) { expect(add(2, 3)).toBe(5); }"), JCS: JCALC},
+  [{'rule': 'assertion-unreachable', 'file': JCT, 'test': 'adds'}, {'rule': 'assertions-removed', 'file': JCT, 'test': 'adds'}])
+case('rt-js-false-and', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("  expect(add(2, 3)).toBe(5);", "  false && expect(add(2, 3)).toBe(5);"), JCS: JCALC},
+  [{'rule': 'assertion-unreachable', 'file': JCT, 'test': 'adds'}, {'rule': 'assertions-removed', 'file': JCT, 'test': 'adds'}])
+case('rt-js-env-gated-return', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("it('adds', () => {\n", "it('adds', () => {\n  if (!process.env.FULL) return;\n"), JCS: JCALC},
+  [{'rule': 'early-exit-added', 'file': JCT, 'test': 'adds'}])
+case('rt-js-never-called-arrow', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("  expect(add(2, 3)).toBe(5);", "  const check = () => { expect(add(2, 3)).toBe(5); };"), JCS: JCALC},
+  [{'rule': 'assertion-unreachable', 'file': JCT, 'test': 'adds'}, {'rule': 'assertions-removed', 'file': JCT, 'test': 'adds'}])
+# red team: tautology, vacuous, filler, shadow, no-op helper
+case('rt-py-tautology', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST.replace("assert add(2, 3) == 5", "assert add(2, 3) == add(2, 3)"), CS: CALC},
+  [{'rule': 'assertion-weakened', 'file': CT, 'test': 'test_add'}])
+case('rt-js-tautology', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("expect(add(2, 3)).toBe(5)", "expect(add(2, 3)).toBe(add(2, 3))"), JCS: JCALC},
+  [{'rule': 'assertion-weakened', 'file': JCT, 'test': 'adds'}])
+case('rt-py-empty-parametrize', {CT: CALC_TEST, CS: CALC}, {CT: "import pytest\n" + CALC_TEST.replace("def test_add():\n    assert add(2, 3) == 5", "@pytest.mark.parametrize('a,b,e', [])\ndef test_add(a, b, e):\n    assert add(a, b) == e"), CS: CALC},
+  [{'rule': 'test-vacuous', 'file': CT, 'test': 'test_add'}])
+case('rt-js-empty-each', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("it('adds', () => {\n  expect(add(2, 3)).toBe(5);", "it.each([])('adds', () => {\n  expect(add(2, 3)).toBe(5);"), JCS: JCALC},
+  [{'rule': 'test-vacuous', 'file': JCT, 'test': 'adds'}])
+case('rt-py-filler-assertion', {CT: "def test_x():\n    assert compute() == 42\n    assert name == 'bob'\n", CS: CALC}, {CT: "def test_x():\n    assert compute()\n    assert name == 'bob'\n    assert 1 == 1\n", CS: CALC},
+  [{'rule': 'assertion-weakened', 'file': CT, 'test': 'test_x'}])
+case('rt-js-filler-assertion', {JCT: "it('x', () => {\n  expect(compute()).toEqual(42);\n  expect(name).toBe('bob');\n});\n", JCS: JCALC}, {JCT: "it('x', () => {\n  expect(compute()).toBeTruthy();\n  expect(name).toBe('bob');\n  expect(1).toBe(1);\n});\n", JCS: JCALC},
+  [{'rule': 'assertion-weakened', 'file': JCT, 'test': 'x'}])
+case('rt-js-shadow-expect', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: "const expect: any = () => ({ toBe() {} });\n" + JCALC_TEST, JCS: JCALC},
+  [{'rule': 'assertion-shadowed', 'file': JCT}, {'rule': 'assertions-removed', 'file': JCT, 'test': 'adds'}, {'rule': 'assertions-removed', 'file': JCT, 'test': 'divides'}])
+case('rt-js-noop-helper', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: "function check(a, b) { return true; }\n" + JCALC_TEST.replace("expect(add(2, 3)).toBe(5)", "check(add(2, 3), 5)"), JCS: JCALC},
+  [{'rule': 'assertion-helper-noop', 'file': JCT}, {'rule': 'assertions-removed', 'file': JCT, 'test': 'adds'}])
+case('rt-py-noop-helper', {CT: CALC_TEST, CS: CALC}, {CT: "def check(a, e):\n    return True\n\n" + CALC_TEST.replace("assert add(2, 3) == 5", "check(add(2, 3), 5)"), CS: CALC},
+  [{'rule': 'assertion-helper-noop', 'file': CT}, {'rule': 'assertions-removed', 'file': CT, 'test': 'test_add'}])
+# red team: mock the module under test without editing it
+case('rt-py-monkeypatch-unchanged-source', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST.replace("def test_add():\n", "def test_add(monkeypatch):\n    monkeypatch.setattr('app.calc.add', lambda a, b: a + b)\n"), CS: CALC},
+  [{'rule': 'mock-on-module-under-test', 'file': CT, 'test': 'test_add'}])
+case('rt-js-mock-unchanged-source', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: "jest.mock('../src/calc', () => ({ add: (a, b) => a + b, divide: (a, b) => a / b }));\n" + JCALC_TEST, JCS: JCALC},
+  [{'rule': 'mock-on-module-under-test', 'file': JCT}])
+# red team: gate config + unreadable + ignored dir + new config file
+case('rt-config-tamper', {CT: CALC_TEST, CS: CALC, 'gatekeep.config.json': '{"rules": {}}\n'}, {CT: CALC_TEST, CS: CALC, 'gatekeep.config.json': '{"rules": {"test-deleted": "off"}}\n'},
+  [{'rule': 'gate-config-changed', 'file': 'gatekeep.config.json'}])
+case('rt-settings-tamper', {CT: CALC_TEST, CS: CALC, '.claude/settings.local.json': '{"hooks": {}}\n'}, {CT: CALC_TEST, CS: CALC},
+  [{'rule': 'gate-config-changed', 'file': '.claude/settings.local.json'}])
+case('rt-move-test-into-ignored-dir', {CT: CALC_TEST, CS: CALC}, {'vendor/test_calc.py': CALC_TEST, CS: CALC},
+  [{'rule': 'test-file-moved-out', 'file': 'vendor/test_calc.py'}])
+case('rt-new-pytest-ini-testpaths', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST, CS: CALC, 'pytest.ini': "[pytest]\ntestpaths = nonexistent\n"},
+  [{'rule': 'test-config-narrowed', 'file': 'pytest.ini'}])
+case('rt-config-threshold-removed', {CT: CALC_TEST, CS: CALC, 'pytest.ini': "[pytest]\naddopts = --strict-markers -x\n"}, {CT: CALC_TEST, CS: CALC, 'pytest.ini': "[pytest]\n"},
+  [{'rule': 'test-config-changed', 'file': 'pytest.ini'}])
+case('rt-conftest-autouse-patch', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST, CS: CALC, 'conftest.py': "import pytest\nimport app.calc as calc\n\n@pytest.fixture(autouse=True)\ndef _fix(monkeypatch):\n    monkeypatch.setattr(calc, 'add', lambda a, b: a + b)\n"},
+  [{'rule': 'test-config-changed', 'file': 'conftest.py'}, {'rule': 'mock-on-source-module', 'file': 'conftest.py'}])
+
+# false positives: restructuring
+case('fp-py-consolidate-parametrize',
+  {CT: CALC_TEST, CS: CALC},
+  {CT: "import pytest\nfrom app.calc import add, divide\n\n@pytest.mark.parametrize('fn,a,b,e', [(add, 2, 3, 5), (divide, 6, 3, 2)])\ndef test_ops(fn, a, b, e):\n    assert fn(a, b) == e\n", CS: CALC},
+  [{'rule': 'test-deleted', 'file': CT, 'test': 'test_add', 'severity': 'warn'}, {'rule': 'test-deleted', 'file': CT, 'test': 'test_divide', 'severity': 'warn'}])
+case('fp-js-consolidate-each',
+  {JCT: JCALC_TEST, JCS: JCALC},
+  {JCT: "import { add, divide } from '../src/calc';\n\nit.each([[add, 2, 3, 5], [divide, 6, 3, 2]])('ops', (fn, a, b, e) => {\n  expect(fn(a, b)).toBe(e);\n});\n", JCS: JCALC},
+  [{'rule': 'test-deleted', 'file': JCT, 'test': 'adds', 'severity': 'warn'}, {'rule': 'test-deleted', 'file': JCT, 'test': 'divides', 'severity': 'warn'}])
+case('fp-js-consolidate-describe-each',
+  {JCT: JCALC_TEST, JCS: JCALC},
+  {JCT: "import { add, divide } from '../src/calc';\n\ndescribe.each([['add', add, 2, 3, 5], ['divide', divide, 6, 3, 2]])('%s', (name, fn, a, b, e) => {\n  it('computes', () => {\n    expect(fn(a, b)).toBe(e);\n  });\n});\n", JCS: JCALC},
+  [{'rule': 'test-deleted', 'file': JCT, 'test': 'adds', 'severity': 'warn'}, {'rule': 'test-deleted', 'file': JCT, 'test': 'divides', 'severity': 'warn'}])
+case('fp-py-table-driven-loop',
+  {CT: CALC_TEST, CS: CALC},
+  {CT: "from app.calc import add, divide\n\nCASES = [(add, 2, 3, 5), (divide, 6, 3, 2)]\n\ndef test_ops():\n    for fn, a, b, e in CASES:\n        assert fn(a, b) == e\n", CS: CALC},
+  [{'rule': 'test-deleted', 'file': CT, 'test': 'test_add', 'severity': 'warn'}, {'rule': 'test-deleted', 'file': CT, 'test': 'test_divide', 'severity': 'warn'}])
+case('fp-py-subtest-loop',
+  {CT: "import unittest\nfrom app.calc import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 3), 5)\n    def test_add_neg(self):\n        self.assertEqual(add(-2, -3), -5)\n", CS: CALC},
+  {CT: "import unittest\nfrom app.calc import add\n\nclass T(unittest.TestCase):\n    def test_add_cases(self):\n        for a, b, e in [(2, 3, 5), (-2, -3, -5)]:\n            with self.subTest(a=a, b=b):\n                self.assertEqual(add(a, b), e)\n", CS: CALC},
+  [{'rule': 'test-deleted', 'file': CT, 'test': 'T.test_add_neg', 'severity': 'warn'}])  # T.test_add pairs with the new method as a rename
+case('fp-py-pytest-warns', {CT: "import pytest\n\ndef test_x():\n    with pytest.raises(DeprecationWarning):\n        old()\n", CS: CALC}, {CT: "import pytest\n\ndef test_x():\n    with pytest.warns(DeprecationWarning):\n        old()\n", CS: CALC}, [])
+case('fp-py-bare-raises-import', {CT: "import pytest\n\ndef test_x():\n    with pytest.raises(ValueError):\n        f()\n", CS: CALC}, {CT: "from pytest import raises\n\ndef test_x():\n    with raises(ValueError):\n        f()\n", CS: CALC}, [])
+case('fp-py-django-assertcontains', {CT: "class T(TestCase):\n    def test_x(self):\n        r = self.client.get('/')\n        self.assertEqual(r.status_code, 200)\n        self.assertIn('hi', r.content.decode())\n", CS: CALC}, {CT: "class T(TestCase):\n    def test_x(self):\n        r = self.client.get('/')\n        self.assertContains(r, 'hi')\n", CS: CALC}, [{'rule': 'assertions-reduced', 'file': CT, 'test': 'T.test_x', 'severity': 'warn'}])
+case('fp-py-len-zero-to-not', {CT: "def test_x():\n    assert len(q.items) == 0\n", CS: CALC}, {CT: "def test_x():\n    assert not q.items\n", CS: CALC}, [])
+case('fp-js-rtl-getby-throws', {'tests/nav.test.tsx': "it('x', () => {\n  expect(screen.queryByText('Home')).not.toBeNull();\n});\n", JCS: JCALC}, {'tests/nav.test.tsx': "it('x', () => {\n  screen.getByText('Home');\n});\n", JCS: JCALC}, [])
+case('fp-py-rename-with-edit',
+  {CT: "def test_login():\n    result = login('bob', 'pw')\n    assert result['ok'] is True\n    assert result['user'] == 'bob'\n", CS: CALC},
+  {CT: "def test_login_accepts_valid_password():\n    res = login('bob', 'pw')\n    assert res['ok'] is True\n    assert res['user'] == 'bob'\n", CS: CALC},
+  [])
+case('fp-js-reword-with-edit',
+  {JCT: "it('works', () => {\n  expect(login('bob', 'pw')).toEqual({ ok: true, user: 'bob' });\n});\n", JCS: JCALC},
+  {JCT: "it('login accepts a valid password', () => {\n  const res = login('bob', 'pw');\n  expect(res).toEqual({ ok: true, user: 'bob' });\n});\n", JCS: JCALC},
+  [])
+case('fp-js-wrap-in-describe',
+  {JCT: JCALC_TEST, JCS: JCALC},
+  {JCT: "import { add, divide } from '../src/calc';\n\ndescribe('calc', () => {\n  it('adds', () => {\n    const r = add(2, 3);\n    expect(r).toBe(5);\n  });\n  it('divides', () => {\n    expect(divide(6, 3)).toBe(2);\n  });\n});\n", JCS: JCALC},
+  [])
+case('fp-py-unittest-to-pytest',
+  {CT: "import unittest\nfrom app.calc import add\n\nclass TestMath(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 3), 5)\n    def test_add_negative(self):\n        self.assertEqual(add(-2, -3), -5)\n", CS: CALC},
+  {CT: "from app.calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n\ndef test_add_negative():\n    assert add(-2, -3) == -5\n", CS: CALC},
+  [])
+case('fp-py-move-between-files',
+  {CT: CALC_TEST, CS: CALC},
+  {'tests/test_add.py': "from app.calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n", 'tests/test_divide.py': "from app.calc import divide\n\ndef test_divide():\n    assert divide(6, 3) == 2\n", CS: CALC},
+  [])
+case('fp-js-move-between-files',
+  {JCT: JCALC_TEST, JCS: JCALC},
+  {'tests/add.test.ts': "import { add } from '../src/calc';\n\nit('adds', () => {\n  expect(add(2, 3)).toBe(5);\n});\n", 'tests/divide.test.ts': "import { divide } from '../src/calc';\n\nit('divides', () => {\n  expect(divide(6, 3)).toBe(2);\n});\n", JCS: JCALC},
+  [])
+# false positives: idioms
+case('fp-py-eq-none-to-is-none', {CT: "def test_x():\n    assert find('zed') == None\n", CS: CALC}, {CT: "def test_x():\n    assert find('zed') is None\n", CS: CALC}, [])
+case('fp-js-calledTimes1-to-calledOnce', {JCT: "it('x', () => {\n  expect(fn).toHaveBeenCalledTimes(1);\n});\n", JCS: JCALC}, {JCT: "it('x', () => {\n  expect(fn).toHaveBeenCalledOnce();\n});\n", JCS: JCALC}, [])
+case('fp-js-rtl-in-document', {'tests/app.test.tsx': "it('x', () => {\n  expect(container.textContent).toContain('Hi');\n});\n", JCS: JCALC}, {'tests/app.test.tsx': "it('x', () => {\n  expect(screen.getByRole('heading')).toBeInTheDocument();\n});\n", JCS: JCALC}, [])
+case('fp-js-chai-should-style',
+  {'spec/user.spec.js': "describe('user', function () {\n  it('has name', function () {\n    expect(u.name).to.equal('ann');\n  });\n});\n", JCS: JCALC},
+  {'spec/user.spec.js': "describe('user', function () {\n  it('has name', function () {\n    u.name.should.equal('ann');\n  });\n  it('is active', function () {\n    u.active.should.be.true;\n  });\n});\n", JCS: JCALC},
+  [])
+case('fp-js-namespaced-helper',
+  {JCT: "import * as helpers from './helpers';\nit('x', () => {\n  expect(u).toEqual({ name: 'ann' });\n});\n", JCS: JCALC},
+  {JCT: "import * as helpers from './helpers';\nit('x', () => {\n  helpers.assertUser(u, 'ann');\n});\n", JCS: JCALC},
+  [])
+case('fp-py-underscore-helper-imported',
+  {CT: "from app.calc import add\n\ndef test_a():\n    assert add(1, 1) == 2\n", CS: CALC},
+  {CT: "from app.calc import add\nfrom tests.helpers import _check_sum\n\ndef test_a():\n    _check_sum(add(1, 1), 2)\n", CS: CALC, 'tests/helpers.py': "def _check_sum(v, e):\n    assert v == e\n"},
+  [])
+case('fp-py-skipif-platform', {CT: CALC_TEST, CS: CALC}, {CT: "import sys\nimport pytest\n" + CALC_TEST.replace("def test_divide():", "@pytest.mark.skipif(sys.platform == 'win32', reason='posix only')\ndef test_divide():"), CS: CALC},
+  [{'rule': 'test-conditionally-skipped', 'file': CT, 'test': 'test_divide'}])
+case('fp-py-xfail-strict', {CT: CALC_TEST, CS: CALC}, {CT: "import pytest\n" + CALC_TEST.replace("def test_divide():", "@pytest.mark.xfail(strict=True, reason='upstream #12345')\ndef test_divide():"), CS: CALC},
+  [{'rule': 'test-conditionally-skipped', 'file': CT, 'test': 'test_divide'}])
+case('fp-py-importorskip-except',
+  {CT: CALC_TEST, CS: CALC},
+  {CT: "import pytest\n" + CALC_TEST.replace("def test_divide():\n    assert divide(6, 3) == 2", "def test_divide():\n    try:\n        import numpy\n    except ImportError:\n        pytest.skip('numpy missing')\n    assert divide(6, 3) == 2"), CS: CALC},
+  [{'rule': 'test-conditionally-skipped', 'file': CT, 'test': 'test_divide'}])
+case('fp-py-support-file-deleted', {CT: CALC_TEST, CS: CALC, 'tests/fixtures/sample_data.py': "SAMPLE = {'a': 1}\n"}, {CT: CALC_TEST, CS: CALC},
+  [{'rule': 'test-support-file-deleted', 'file': 'tests/fixtures/sample_data.py'}])
+case('fp-py-helper-moved-out-of-tests', {CT: CALC_TEST, CS: CALC, 'tests/testing_utils.py': "def make_user():\n    return {'name': 'ann'}\n"}, {CT: CALC_TEST, CS: CALC, 'src/testing_utils.py': "def make_user():\n    return {'name': 'ann'}\n"},
+  [])
+case('fp-py-tolerance-reorder',
+  {CT: "import pytest\ndef test_x():\n    assert a == pytest.approx(1.0, rel=1e-9)\n    assert b == pytest.approx(2.0, rel=1e-3)\n", CS: CALC},
+  {CT: "import pytest\ndef test_x():\n    assert b == pytest.approx(2.0, rel=1e-3)\n    assert a == pytest.approx(1.0, rel=1e-9)\n", CS: CALC},
+  [])
+case('fp-js-spyon-date-now', {'tests/date.test.ts': "it('x', () => {\n  expect(fmt()).toBe('2020');\n});\n", 'src/date.ts': "export function fmt() { return '2020'; }\n"},
+  {'tests/date.test.ts': "it('x', () => {\n  vi.spyOn(Date, 'now').mockReturnValue(0);\n  expect(fmt()).toBe('1970');\n});\n", 'src/date.ts': "export function fmt() { return String(new Date(Date.now()).getFullYear()); }\n"},
+  [])
+case('fp-js-mock-axios-package', {'tests/api.test.ts': "it('x', () => {\n  expect(get('/')).toBe(1);\n});\n", 'src/lib/axios.ts': "export const client = 1;\n"},
+  {'tests/api.test.ts': "vi.mock('axios');\nit('x', () => {\n  expect(get('/')).toBe(1);\n});\n", 'src/lib/axios.ts': "export const client = 2;\n"},
+  [])
+case('fp-py-monkeypatch-constant', {'tests/test_api.py': "from app import api\n\ndef test_x():\n    assert api.fetch('k') == 1\n", 'app/api.py': "CACHE_TTL = 60\n\ndef fetch(k):\n    return 1\n"},
+  {'tests/test_api.py': "from app import api\n\ndef test_x(monkeypatch):\n    monkeypatch.setattr(api, 'CACHE_TTL', 0)\n    assert api.fetch('k') == 1\n", 'app/api.py': "CACHE_TTL = 60\n\ndef fetch(k):\n    return 1  # uses CACHE_TTL\n"},
+  [{'rule': 'constant-override-on-changed-module', 'file': 'tests/test_api.py', 'test': 'test_x'}])
+case('fp-js-spyon-logger-unrelated', {'tests/job.test.ts': "import * as logger from '../src/logger';\nit('x', () => {\n  expect(runJob()).toBe(1);\n});\n", 'src/logger.ts': "export function warn(m) { console.warn(m); }\nexport function info(m) { console.info('[i] ' + m); }\n"},
+  {'tests/job.test.ts': "import * as logger from '../src/logger';\nit('x', () => {\n  vi.spyOn(logger, 'warn').mockImplementation(() => {});\n  expect(runJob()).toBe(1);\n});\n", 'src/logger.ts': "export function warn(m) { console.warn(m); }\nexport function info(m) { console.info('[info] ' + m); }\n"},
+  [{'rule': 'mock-unrelated-to-change', 'file': 'tests/job.test.ts', 'test': 'x'}])
+case('fp-py-conftest-fixture-added', {CT: CALC_TEST, CS: CALC, 'conftest.py': "import pytest\n"}, {CT: CALC_TEST, CS: CALC, 'conftest.py': "import pytest\n\n@pytest.fixture\ndef http_timeout():\n    return 5\n"}, [])
+case('fp-py-split-test',
+  {CT: "def test_login():\n    r = login('bob', 'pw')\n    assert r['ok'] is True\n    assert r['user'] == 'bob'\n    assert r['token']\n", CS: CALC},
+  {CT: "def test_login_ok():\n    r = login('bob', 'pw')\n    assert r['ok'] is True\n\ndef test_login_user():\n    r = login('bob', 'pw')\n    assert r['user'] == 'bob'\n\ndef test_login_token():\n    r = login('bob', 'pw')\n    assert r['token']\n", CS: CALC},
+  [{'rule': 'assertions-reduced', 'file': CT, 'test': 'test_login_ok'}])
+print('fixtures:', len(list(ROOT.iterdir())))
+
+
+print('fixtures:', len(list(ROOT.iterdir())))

@@ -1,0 +1,16 @@
+{
+  "findings": [
+    {
+      "rule": "test-deleted",
+      "file": "tests/test_calc.py",
+      "test": "test_add",
+      "severity": "warn"
+    },
+    {
+      "rule": "test-deleted",
+      "file": "tests/test_calc.py",
+      "test": "test_divide",
+      "severity": "warn"
+    }
+  ]
+}

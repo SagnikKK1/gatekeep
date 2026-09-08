@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "rule": "test-config-changed",
+      "file": "conftest.py"
+    },
+    {
+      "rule": "mock-on-source-module",
+      "file": "conftest.py"
+    }
+  ]
+}

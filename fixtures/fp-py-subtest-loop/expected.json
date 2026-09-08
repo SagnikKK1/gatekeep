@@ -1,0 +1,10 @@
+{
+  "findings": [
+    {
+      "rule": "test-deleted",
+      "file": "tests/test_calc.py",
+      "test": "T.test_add_neg",
+      "severity": "warn"
+    }
+  ]
+}

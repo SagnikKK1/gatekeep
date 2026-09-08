@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "early-exit-added",
+      "file": "tests/test_calc.py",
+      "test": "test_add"
+    }
+  ]
+}

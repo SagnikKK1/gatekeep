@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "test-vacuous",
+      "file": "tests/test_calc.py",
+      "test": "test_add"
+    }
+  ]
+}

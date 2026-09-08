@@ -1,0 +1,14 @@
+{
+  "findings": [
+    {
+      "rule": "assertion-unreachable",
+      "file": "tests/test_calc.py",
+      "test": "test_add"
+    },
+    {
+      "rule": "assertions-removed",
+      "file": "tests/test_calc.py",
+      "test": "test_add"
+    }
+  ]
+}

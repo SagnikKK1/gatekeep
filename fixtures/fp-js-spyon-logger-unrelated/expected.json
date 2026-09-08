@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "mock-unrelated-to-change",
+      "file": "tests/job.test.ts",
+      "test": "x"
+    }
+  ]
+}

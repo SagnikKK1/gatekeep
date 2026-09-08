@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "assertions-reduced",
+      "file": "tests/test_calc.py",
+      "test": "test_login_ok"
+    }
+  ]
+}

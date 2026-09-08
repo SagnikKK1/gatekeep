@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "gate-config-changed",
+      "file": ".claude/settings.local.json"
+    }
+  ]
+}

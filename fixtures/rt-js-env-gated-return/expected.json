@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "early-exit-added",
+      "file": "tests/calc.test.ts",
+      "test": "adds"
+    }
+  ]
+}

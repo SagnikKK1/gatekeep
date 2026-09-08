@@ -1,0 +1,10 @@
+{
+  "findings": [
+    {
+      "rule": "assertions-reduced",
+      "file": "tests/test_calc.py",
+      "test": "T.test_x",
+      "severity": "warn"
+    }
+  ]
+}

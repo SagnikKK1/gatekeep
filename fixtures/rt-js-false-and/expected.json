@@ -1,0 +1,14 @@
+{
+  "findings": [
+    {
+      "rule": "assertion-unreachable",
+      "file": "tests/calc.test.ts",
+      "test": "adds"
+    },
+    {
+      "rule": "assertions-removed",
+      "file": "tests/calc.test.ts",
+      "test": "adds"
+    }
+  ]
+}
