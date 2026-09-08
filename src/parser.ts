@@ -30,11 +30,19 @@ async function parserFor(lang: Lang) {
   return p;
 }
 
+export class ParseTimeout extends Error {
+  constructor(public readonly lang: Lang, public readonly ms: number) { super(`parsing ${lang} source exceeded ${ms} ms`); }
+}
+
+/** Some grammars go quadratic on hostile input (tens of thousands of comment lines). Cap the time; the caller treats a timeout as unreadable. */
+export const PARSE_TIMEOUT_MS = Number(process.env.GATEKEEP_PARSE_TIMEOUT_MS ?? 8000);
+
 /** Parse `source`, run `fn` on the tree, and free the wasm-side tree afterwards. One parser per language is reused. */
 export async function withTree<T>(source: string, lang: Lang, fn: (tree: Tree) => T): Promise<T> {
   const parser = await parserFor(lang);
-  const tree = parser.parse(source);
-  if (!tree) throw new Error(`failed to parse ${lang} source`);
+  const t0 = Date.now();
+  const tree = parser.parse(source, null, { progressCallback: () => Date.now() - t0 > PARSE_TIMEOUT_MS });
+  if (!tree) throw new ParseTimeout(lang, PARSE_TIMEOUT_MS);
   try { return fn(tree); } finally { tree.delete(); }
 }
 
