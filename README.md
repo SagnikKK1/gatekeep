@@ -299,19 +299,19 @@ The judge has its own fixtures under `test/fixtures/judge/`: an `input.json` (ta
 
 ### False-positive replay on real history
 
-`scripts/corpus-fp.mjs <repo> <n>` replays the last `n` first-parent commits of any repository through the rules. Every hit on reviewed human commits is either a true detection or a false positive to fix. Current numbers on 300 commits each:
+`scripts/corpus-fp.mjs <repo> <n>` replays the last `n` first-parent commits of any repository through the rules. Every hit on reviewed human commits is either a true detection or a false positive to fix. Numbers on the last 300 first-parent commits of each, test-integrity rules only; flask, express and zod reproduced on fresh clones on 2026-09-09, the others from the day before:
 
 | Repo | Commits touching tests | Findings | Of which blocking | Blocking, by rule |
 |---|---|---|---|---|
-| flask | 141 | 53 | 32 | test-deleted 23, test-config-narrowed 5, assertion-weakened 4 |
-| express | 93 | 149 | 93 | test-deleted 84, test-skipped 6, assertion-weakened 2, assertions-removed 1 |
-| zod | 154 | 21 | 14 | test-deleted 11, test-file-deleted 2, assertion-weakened 1 |
+| flask | 140 | 53 | 32 | test-deleted 23, test-config-narrowed 5, assertion-weakened 4 |
+| express | 93 | 149 | 105 | test-deleted 84, assertion-weakened 9, test-skipped 6, test-file-deleted 5, assertions-removed 1 |
+| zod | 155 | 28 | 16 | test-deleted 12, test-file-deleted 2, assertion-swallowed 1, assertion-weakened 1 |
 | cobra (Go) | 119 | 39 | 5 | test-file-deleted 2, ci-check-removed 2, test-deleted 1 |
 | clap (Rust) | 77 | 48 | 2 | test-deleted 1, ci-check-removed 1; 18 `test-file-unparseable` warnings from snapbox's `str![[...]]` macro, which this grammar build cannot parse, so count-based rules stand down on those files |
 | gson (Java) | 153 | 28 | 9 | test-deleted 2, test-file-deleted 2, assertion-weakened 2, assertion-swallowed 2, test-skipped 1 |
 | sinatra (Ruby) | 129 | 53 | 16 | test-file-deleted 12 (a removed feature's specs), test-deleted 4 |
 
-The residual is almost entirely `test-deleted` on commits that genuinely removed tests (feature removals, reverts). Inside an agent session that is the intended behavior; the override directive, the block limit and the per-rule severities are the escape hatches.
+The residual is almost entirely `test-deleted` and `test-file-deleted` on commits that genuinely removed tests (express's five deleted test files are commits titled "Remove req.param()" and the like). The nine express `assertion-weakened` hits are merges of 4.x releases into 5.x where `err.message.should.equal('...')` became `assert.ok(err)`: a specific check replaced by a truthiness check, by maintainers, during a test-framework migration. Those are true detections too, of the kind a reviewer would want to see. Inside an agent session that is the intended behavior; the override directive, the block limit and the per-rule severities are the escape hatches.
 
 The check-integrity and scope families replayed over the same commits, after tuning against them. The claim rules need a transcript, so they cannot be replayed over commit history and have fixture coverage only:
 
