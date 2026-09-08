@@ -1,0 +1,2 @@
+--extra-index-url https://pkgs.example.org/simple
+flask==3.0.0

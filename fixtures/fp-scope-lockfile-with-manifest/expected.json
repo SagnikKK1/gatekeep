@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "dependency-added",
+      "file": "package.json",
+      "severity": "warn"
+    }
+  ]
+}

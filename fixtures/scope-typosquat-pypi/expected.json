@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "rule": "dependency-added",
+      "file": "requirements.txt"
+    },
+    {
+      "rule": "typosquat-suspect",
+      "file": "requirements.txt"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "dependency-loosened",
+      "file": "package.json"
+    }
+  ]
+}

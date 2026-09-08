@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "rule": "dependency-added",
+      "file": "package.json"
+    },
+    {
+      "rule": "typosquat-suspect",
+      "file": "package.json"
+    }
+  ]
+}

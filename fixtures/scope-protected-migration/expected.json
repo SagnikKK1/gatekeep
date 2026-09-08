@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "protected-path-edited",
+      "file": "db/migrations/0001_init.py"
+    }
+  ]
+}

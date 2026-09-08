@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "secret-introduced",
+      "file": "src/calc.ts"
+    }
+  ]
+}

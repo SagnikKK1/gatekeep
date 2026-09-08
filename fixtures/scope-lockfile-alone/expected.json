@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "lockfile-changed-alone",
+      "file": "package-lock.json",
+      "severity": "warn"
+    }
+  ]
+}

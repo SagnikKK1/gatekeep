@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "dependency-added",
+      "file": "pyproject.toml"
+    }
+  ]
+}

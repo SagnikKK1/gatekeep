@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "protected-path-edited",
+      "file": "app/auth/session.py"
+    }
+  ]
+}
