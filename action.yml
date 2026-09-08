@@ -1,0 +1,68 @@
+name: gatekeep
+description: Verify that a pull request did not weaken its tests, checks, or guards. Computes the verdict from the diff in CI; never trusts a verdict uploaded from a developer machine.
+author: Sagnik Dey
+branding:
+  icon: shield
+  color: gray-dark
+inputs:
+  base:
+    description: Git ref to compare against. Defaults to the pull request base commit, or the repository default branch on push.
+    required: false
+    default: ''
+  fail-on-warn:
+    description: Treat warnings as blocking.
+    required: false
+    default: 'false'
+  allow:
+    description: Comma-separated rules to lift for this run (recorded in the verdict). Commit trailers "gatekeep: allow <rule> -- reason" between base and HEAD work without this.
+    required: false
+    default: ''
+  node-version:
+    description: Node.js version used to run gatekeep.
+    required: false
+    default: '20'
+outputs:
+  decision:
+    description: pass, warn or block
+    value: ${{ steps.run.outputs.decision }}
+  verdict:
+    description: Path to the verdict JSON
+    value: ${{ steps.run.outputs.verdict }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+    - name: Build gatekeep
+      shell: bash
+      run: |
+        cd "$GITHUB_ACTION_PATH"
+        if [ ! -f dist/src/cli.js ]; then npm ci --silent && npm run build --silent; fi
+    - name: Resolve the base ref
+      id: base
+      shell: bash
+      run: |
+        set -euo pipefail
+        base='${{ inputs.base }}'
+        if [ -z "$base" ]; then
+          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then base='${{ github.event.pull_request.base.sha }}'
+          else base="origin/${{ github.event.repository.default_branch }}"; fi
+        fi
+        git fetch --no-tags --depth=200 origin "${base#origin/}" 2>/dev/null || git fetch --no-tags origin "${base#origin/}" || true
+        git rev-parse --verify -q "$base^{commit}" >/dev/null 2>&1 || base="FETCH_HEAD"
+        echo "ref=$base" >> "$GITHUB_OUTPUT"
+    - name: Run gatekeep
+      id: run
+      shell: bash
+      env:
+        GATEKEEP_HOME: ${{ runner.temp }}/gatekeep-home
+        GATEKEEP_ALLOW: ${{ inputs.allow }}
+      run: |
+        set -uo pipefail
+        args=(run --base "${{ steps.base.outputs.ref }}" --json)
+        [ "${{ inputs.fail-on-warn }}" = "true" ] && args+=(--fail-on-warn)
+        node "$GITHUB_ACTION_PATH/dist/src/cli.js" "${args[@]}" > "${{ runner.temp }}/gatekeep-verdict.json"; code=$?
+        echo "verdict=${{ runner.temp }}/gatekeep-verdict.json" >> "$GITHUB_OUTPUT"
+        node "$GITHUB_ACTION_PATH/scripts/annotate.mjs" "${{ runner.temp }}/gatekeep-verdict.json" >> "$GITHUB_OUTPUT"
+        exit $code
