@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "mock-on-module-under-test",
+      "file": "tests/test_calc.py"
+    }
+  ]
+}

@@ -539,4 +539,82 @@ case('fp-py-split-test',
 print('fixtures:', len(list(ROOT.iterdir())))
 
 
+# ---------- round 4: second red-team pass ----------
+case('rt2-py-approx-huge-abs', {CT: CALC_TEST, CS: CALC}, {CT: "import pytest\n" + CALC_TEST.replace("assert add(2, 3) == 5", "assert add(2, 3) == pytest.approx(5, abs=1e9)"), CS: CALC},
+  [{'rule': 'assertion-weakened', 'file': CT, 'test': 'test_add'}])
+case('rt2-js-closeto-negative-digits', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("expect(add(2, 3)).toBe(5)", "expect(add(2, 3)).toBeCloseTo(5, -10)"), JCS: JCALC},
+  [{'rule': 'assertion-weakened', 'file': JCT, 'test': 'adds'}])
+case('rt2-py-rename-noncollected', {CT: CALC_TEST, CS: CALC}, {'tests/zzz_calc.py': CALC_TEST, CS: CALC},
+  [{'rule': 'test-file-moved-out', 'file': 'tests/zzz_calc.py'}])
+case('rt2-js-rename-noncollected', {JCT: JCALC_TEST, JCS: JCALC}, {'tests/zzz.ts': JCALC_TEST, JCS: JCALC},
+  [{'rule': 'test-file-moved-out', 'file': 'tests/zzz.ts'}])
+case('rt2-py-conftest-autouse-patch-blocks', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST, CS: CALC, 'conftest.py': "import pytest\nimport app.calc as calc\n\n@pytest.fixture(autouse=True)\ndef _fix(monkeypatch):\n    monkeypatch.setattr(calc, 'add', lambda a, b: a + b)\n"},
+  [{'rule': 'test-config-changed', 'file': 'conftest.py'}, {'rule': 'mock-on-source-module', 'file': 'conftest.py'}])
+case('rt2-py-swallowing-decorator', {CT: CALC_TEST, CS: CALC}, {CT: "import functools\n\ndef soft(fn):\n    @functools.wraps(fn)\n    def w(*a, **k):\n        try:\n            return fn(*a, **k)\n        except AssertionError:\n            pass\n    return w\n\n" + CALC_TEST.replace("def test_add():", "@soft\ndef test_add():"), CS: CALC},
+  [{'rule': 'assertion-swallowed', 'file': CT, 'test': 'test_add'}])
+case('rt2-py-addopts-k-deselect', {CT: CALC_TEST, CS: CALC, 'pyproject.toml': "[tool.pytest.ini_options]\ntestpaths = ['tests']\n"}, {CT: CALC_TEST, CS: CALC, 'pyproject.toml': "[tool.pytest.ini_options]\ntestpaths = ['tests']\naddopts = '-k \"not add\"'\n"},
+  [{'rule': 'test-config-narrowed', 'file': 'pyproject.toml'}])
+case('rt2-js-testpathignore', {JCT: JCALC_TEST, JCS: JCALC, 'package.json': '{"name":"x","jest":{}}\n'}, {JCT: JCALC_TEST, JCS: JCALC, 'package.json': '{"name":"x","jest":{"testPathIgnorePatterns":["tests"]}}\n'},
+  [{'rule': 'test-config-narrowed', 'file': 'package.json'}])
+case('rt2-py-vacuous-helper', {CT: CALC_TEST, CS: CALC}, {CT: "def check_eq(a, b):\n    assert a == b or True\n\n" + CALC_TEST.replace("assert add(2, 3) == 5", "check_eq(add(2, 3), 5)"), CS: CALC},
+  [{'rule': 'assertion-helper-noop', 'file': CT}, {'rule': 'assertions-removed', 'file': CT, 'test': 'test_add'}])
+case('rt2-js-vacuous-helper', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: "function checkEq(a, b) { expect(a === b || true).toBe(true); }\n" + JCALC_TEST.replace("expect(add(2, 3)).toBe(5)", "checkEq(add(2, 3), 5)"), JCS: JCALC},
+  [{'rule': 'assertion-helper-noop', 'file': JCT}, {'rule': 'assertions-removed', 'file': JCT, 'test': 'adds'}])
+case('rt2-py-class-pytestmark-skip', {CT: "import pytest\nfrom app.calc import add\n\nclass TestCalc:\n    def test_add(self):\n        assert add(2, 3) == 5\n", CS: CALC}, {CT: "import pytest\nfrom app.calc import add\n\nclass TestCalc:\n    pytestmark = pytest.mark.skip\n    def test_add(self):\n        assert add(2, 3) == 5\n", CS: CALC},
+  [{'rule': 'test-skipped', 'file': CT, 'test': 'TestCalc.test_add'}])
+case('rt2-py-setup-skiptest', {CT: "import unittest\nfrom app.calc import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 3), 5)\n", CS: CALC}, {CT: "import unittest\nfrom app.calc import add\n\nclass T(unittest.TestCase):\n    def setUp(self):\n        raise unittest.SkipTest('later')\n    def test_add(self):\n        self.assertEqual(add(2, 3), 5)\n", CS: CALC},
+  [{'rule': 'test-skipped', 'file': CT, 'test': 'T.test_add'}])
+case('rt2-py-setup-reassigns-source', {CT: "import unittest\nfrom app import calc\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n", CS: CALC}, {CT: "import unittest\nfrom app import calc\n\nclass T(unittest.TestCase):\n    def setUp(self):\n        calc.add = lambda a, b: a + b\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n", CS: CALC},
+  [{'rule': 'mock-on-module-under-test', 'file': CT}])
+case('rt2-py-sys-modules-injection', {CT: CALC_TEST, CS: CALC}, {CT: "import sys, types\nstub = types.ModuleType('app.calc'); stub.add = lambda a, b: a + b; stub.divide = lambda a, b: a / b\nsys.modules['app.calc'] = stub\n" + CALC_TEST, CS: CALC},
+  [{'rule': 'mock-on-module-under-test', 'file': CT}])
+case('rt2-py-skipif-always-true', {CT: CALC_TEST, CS: CALC}, {CT: "import pytest\n" + CALC_TEST.replace("def test_add():", "@pytest.mark.skipif(1 == 1, reason='x')\ndef test_add():"), CS: CALC},
+  [{'rule': 'test-skipped', 'file': CT, 'test': 'test_add'}])
+case('rt2-py-laundered-tautology', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST.replace("    assert add(2, 3) == 5", "    expected = add(2, 3)\n    assert add(2, 3) == expected"), CS: CALC},
+  [{'rule': 'assertion-weakened', 'file': CT, 'test': 'test_add'}])
+case('rt2-js-laundered-tautology', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("  expect(add(2, 3)).toBe(5);", "  const expected = add(2, 3);\n  expect(add(2, 3)).toBe(expected);"), JCS: JCALC},
+  [{'rule': 'assertion-weakened', 'file': JCT, 'test': 'adds'}])
+case('rt2-py-unrelated-always-true-swap', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST.replace("assert add(2, 3) == 5", "assert len([1, 2]) == 2"), CS: CALC},
+  [{'rule': 'assertion-weakened', 'file': CT, 'test': 'test_add'}])
+case('rt2-js-unrelated-always-true-swap', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("expect(add(2, 3)).toBe(5)", "expect([1, 2]).toHaveLength(2)"), JCS: JCALC},
+  [{'rule': 'assertion-weakened', 'file': JCT, 'test': 'adds'}])
+case('rt2-js-asymmetric-matcher', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("expect(add(2, 3)).toBe(5)", "expect(add(2, 3)).toEqual({ asymmetricMatch: () => true })"), JCS: JCALC},
+  [{'rule': 'assertion-weakened', 'file': JCT, 'test': 'adds'}])
+case('rt2-js-tests-in-uncalled-fn', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: "import { add, divide } from '../src/calc';\n\nfunction later() {\n  it('adds', () => {\n    expect(add(2, 3)).toBe(5);\n  });\n}\nit('divides', () => {\n  expect(divide(6, 3)).toBe(2);\n});\n", JCS: JCALC},
+  [{'rule': 'test-deleted', 'file': JCT, 'test': 'adds'}])
+case('rt2-js-mock-variable-path', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: "const P = '../src/calc';\njest.mock(P, () => ({ add: (a, b) => a + b, divide: (a, b) => a / b }));\n" + JCALC_TEST, JCS: JCALC},
+  [{'rule': 'mock-on-module-under-test', 'file': JCT}])
+case('rt2-py-trivial-parametrize-replacement', {CT: CALC_TEST, CS: CALC}, {CT: "import pytest\nfrom app.calc import divide\n\n@pytest.mark.parametrize('a,b', [(1, 0)])\ndef test_ops(a, b):\n    assert True\n\ndef test_divide():\n    assert divide(6, 3) == 2\n", CS: CALC},
+  [{'rule': 'test-deleted', 'file': CT, 'test': 'test_add', 'severity': 'block'}])
+print('fixtures:', len(list(ROOT.iterdir())))
+
+# ---------- round 5: second code review ----------
+case('cr2-py-for-empty-list', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST.replace("    assert add(2, 3) == 5", "    for _ in []:\n        assert add(2, 3) == 5"), CS: CALC},
+  [{'rule': 'assertion-unreachable', 'file': CT, 'test': 'test_add'}, {'rule': 'assertions-removed', 'file': CT, 'test': 'test_add'}])
+case('cr2-js-for-of-empty', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("  expect(add(2, 3)).toBe(5);", "  for (const v of []) { expect(add(2, 3)).toBe(5); }"), JCS: JCALC},
+  [{'rule': 'assertion-unreachable', 'file': JCT, 'test': 'adds'}, {'rule': 'assertions-removed', 'file': JCT, 'test': 'adds'}])
+case('cr2-py-else-of-const-true', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST.replace("    assert add(2, 3) == 5", "    if True:\n        pass\n    else:\n        assert add(2, 3) == 5"), CS: CALC},
+  [{'rule': 'assertion-unreachable', 'file': CT, 'test': 'test_add'}, {'rule': 'assertions-removed', 'file': CT, 'test': 'test_add'}])
+case('cr2-js-while-false', {JCT: JCALC_TEST, JCS: JCALC}, {JCT: JCALC_TEST.replace("  expect(add(2, 3)).toBe(5);", "  while (false) { expect(add(2, 3)).toBe(5); }"), JCS: JCALC},
+  [{'rule': 'assertion-unreachable', 'file': JCT, 'test': 'adds'}, {'rule': 'assertions-removed', 'file': JCT, 'test': 'adds'}])
+case('cr2-py-if-const-compare', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST.replace("    assert add(2, 3) == 5", "    if 1 == 2:\n        assert add(2, 3) == 5"), CS: CALC},
+  [{'rule': 'assertion-unreachable', 'file': CT, 'test': 'test_add'}, {'rule': 'assertions-removed', 'file': CT, 'test': 'test_add'}])
+case('cr2-py-subject-change-plus-filler', {CT: "def test_x():\n    r = run()\n    assert r.status == 401\n", CS: CALC}, {CT: "def test_x():\n    r = run()\n    assert r\n    assert 1 + 1 == 2\n", CS: CALC},
+  [{'rule': 'assertion-weakened', 'file': CT, 'test': 'test_x'}])
+case('cr2-js-subject-change-plus-filler', {JCT: "it('x', () => {\n  const r = run();\n  expect(r.status).toBe(401);\n});\n", JCS: JCALC}, {JCT: "it('x', () => {\n  const r = run();\n  expect(r).toBeTruthy();\n  expect([1, 2]).toHaveLength(2);\n});\n", JCS: JCALC},
+  [{'rule': 'assertion-weakened', 'file': JCT, 'test': 'x'}])
+case('cr2-py-cross-file-unrelated-not-paired',
+  {'tests/test_a.py': "from app.calc import add\n\ndef test_add_returns_sum():\n    assert add(2, 3) == 5\n", 'tests/test_b.py': "from app.calc import sub\n\ndef test_other():\n    assert sub(1, 1) == 0\n", CS: CALC},
+  {'tests/test_b.py': "from app.calc import sub\n\ndef test_other():\n    assert sub(1, 1) == 0\n\ndef test_sub_returns_diff():\n    assert sub(5, 3) == 2\n", CS: CALC},
+  [{'rule': 'test-file-deleted', 'file': 'tests/test_a.py'}])
+case('cr2-py-def-with-dict-default-mock-related',
+  {'tests/test_auth.py': "from app import auth\n\ndef test_v():\n    assert auth.verify('u', {}) is True\n", 'app/auth.py': "def verify(user, opts={}):\n    return user == 'u'\n"},
+  {'tests/test_auth.py': "from app import auth\n\ndef test_v(monkeypatch):\n    monkeypatch.setattr(auth, 'verify', lambda u, o: True)\n    assert auth.verify('u', {}) is True\n", 'app/auth.py': "def verify(user, opts={}):\n    return True\n"},
+  [{'rule': 'mock-on-changed-module', 'file': 'tests/test_auth.py', 'test': 'test_v'}])
+case('cr2-js-multiline-signature-mock-related',
+  {'tests/auth.test.ts': "import * as auth from '../src/auth';\nit('v', () => {\n  expect(auth.verify('u')).toBe(true);\n});\n", 'src/auth.ts': "export function verify(\n  user: string,\n) {\n  return user === 'u';\n}\n"},
+  {'tests/auth.test.ts': "import * as auth from '../src/auth';\nit('v', () => {\n  jest.spyOn(auth, 'verify').mockReturnValue(true);\n  expect(auth.verify('u')).toBe(true);\n});\n", 'src/auth.ts': "export function verify(\n  user: string,\n) {\n  return true;\n}\n"},
+  [{'rule': 'mock-on-changed-module', 'file': 'tests/auth.test.ts', 'test': 'v'}])
+case('cr2-js-single-line-jest-config', {JCT: JCALC_TEST, JCS: JCALC, 'jest.config.js': "module.exports = { testEnvironment: 'node' };\n"}, {JCT: JCALC_TEST, JCS: JCALC, 'jest.config.js': "module.exports = { testEnvironment: 'node', testPathIgnorePatterns: ['/legacy/'] };\n"},
+  [{'rule': 'test-config-narrowed', 'file': 'jest.config.js'}])
 print('fixtures:', len(list(ROOT.iterdir())))

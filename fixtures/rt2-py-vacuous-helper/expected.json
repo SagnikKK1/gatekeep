@@ -1,0 +1,13 @@
+{
+  "findings": [
+    {
+      "rule": "assertion-helper-noop",
+      "file": "tests/test_calc.py"
+    },
+    {
+      "rule": "assertions-removed",
+      "file": "tests/test_calc.py",
+      "test": "test_add"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "assertion-weakened",
+      "file": "tests/calc.test.ts",
+      "test": "adds"
+    }
+  ]
+}

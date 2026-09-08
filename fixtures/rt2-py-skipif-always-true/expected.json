@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "test-skipped",
+      "file": "tests/test_calc.py",
+      "test": "test_add"
+    }
+  ]
+}
