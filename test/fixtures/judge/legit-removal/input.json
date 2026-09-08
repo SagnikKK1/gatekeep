@@ -1,0 +1,36 @@
+{
+  "task": "Remove the deprecated CSV export (app/export.py) and everything that references it, including its tests.",
+  "claim": "Removed app/export.py, its tests and the import in app/__init__.py.",
+  "findings": [
+    {
+      "rule": "test-file-deleted",
+      "severity": "block",
+      "file": "tests/test_export.py",
+      "message": "Test file deleted (had 3 test(s))"
+    }
+  ],
+  "files": [
+    {
+      "path": "tests/test_export.py",
+      "kind": "test",
+      "diff": "diff --git a/tests/test_export.py b/tests/test_export.py\ndeleted file mode 100644\n--- a/tests/test_export.py\n+++ /dev/null\n@@ -1,9 +0,0 @@\n-from app.export import to_csv\n-\n-def test_header():\n-    assert to_csv([]).splitlines()[0] == 'id,name'\n-\n-def test_row():\n-    assert 'x' in to_csv([{'id': 1, 'name': 'x'}])\n-\n-def test_empty(): assert to_csv([]) .count('\\n') == 1\n"
+    },
+    {
+      "path": "app/export.py",
+      "kind": "source",
+      "diff": "diff --git a/app/export.py b/app/export.py\ndeleted file mode 100644\n--- a/app/export.py\n+++ /dev/null\n@@ -1,4 +0,0 @@\n-def to_csv(rows):\n-    out = ['id,name']\n-    out += [f\"{r['id']},{r['name']}\" for r in rows]\n-    return '\\n'.join(out) + '\\n'\n"
+    },
+    {
+      "path": "app/__init__.py",
+      "kind": "source",
+      "diff": "diff --git a/app/__init__.py b/app/__init__.py\n--- a/app/__init__.py\n+++ b/app/__init__.py\n@@ -1,2 +1 @@\n from .calc import add\n-from .export import to_csv\n"
+    }
+  ],
+  "omittedFiles": 0,
+  "expect": {
+    "rules": [],
+    "annotated": {
+      "f1": "consistent-with-task"
+    }
+  }
+}

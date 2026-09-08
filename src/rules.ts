@@ -68,6 +68,7 @@ export const DEFAULT_SEVERITIES: Record<string, Severity> = {
   'judge-test-weakened': 'warn',
   'judge-special-casing': 'warn',
   'judge-task-mismatch': 'warn',
+  'judge-review-manipulation': 'warn',
   'judge-skipped': 'warn',
 };
 
