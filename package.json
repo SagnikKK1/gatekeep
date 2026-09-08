@@ -4,7 +4,7 @@
   "description": "Independent verification gate for AI coding agents: blocks the agent from declaring done when it tampered with tests.",
   "type": "module",
   "bin": {
-    "gatekeep": "./dist/src/cli.js"
+    "gatekeep": "dist/src/cli.js"
   },
   "files": [
     "dist/src",
