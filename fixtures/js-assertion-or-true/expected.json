@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "assertion-weakened",
+      "file": "tests/test_auth.py",
+      "test": "test_x"
+    }
+  ]
+}

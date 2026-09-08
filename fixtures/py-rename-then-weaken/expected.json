@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "rule": "assertion-weakened",
+      "file": "tests/test_auth.py",
+      "test": "test_login_rejects_wrong_password"
+    }
+  ]
+}

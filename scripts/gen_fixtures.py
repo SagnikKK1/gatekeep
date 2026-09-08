@@ -290,4 +290,86 @@ case('honest-js-rename-test-keep-body',
 
 print('fixtures:', len(list(ROOT.iterdir())))
 
+# ---------- round 2: patterns learned from real-repo replay ----------
+SUPERTEST = """const request = require('supertest');
+const express = require('../');
+
+describe('res', function () {
+  describe('.send(String)', function () {
+    it('should send as html', function (done) {
+      const app = express();
+      app.use(function (req, res) { res.send('<p>hey</p>'); });
+      request(app).get('/').expect('Content-Type', 'text/html; charset=utf-8').expect(200, '<p>hey</p>', done);
+    });
+    it('should set ETag', function (done) {
+      const app = express();
+      app.use(function (req, res) { res.send('hello'); });
+      request(app).get('/').expect('ETag', 'W/"5-XYZ"').expect(200, done);
+    });
+  });
+});
+"""
+case('honest-js-supertest-expect-chain',
+  {'test/res.send.js': SUPERTEST.replace("it('should set ETag'", "it('should set ETag header'"), 'lib/response.js': "module.exports = {};\n"},
+  {'test/res.send.js': SUPERTEST, 'lib/response.js': "module.exports = { x: 1 };\n"},
+  [])
+
+case('honest-js-rename-test-same-body',
+  {JT: JS_TEST, JS: JS_SRC},
+  {JT: JS_TEST.replace("it('login rejects bad password'", "it('login rejects a bad password'"), JS: JS_SRC},
+  [])
+
+case('honest-js-local-helper-asserts',
+  {JT: "import { verify } from '../src/auth';\nfunction checkVerify(a, b, want) {\n  expect(verify(a, b)).toBe(want);\n}\nit('matches', () => { checkVerify('a', 'a', true); });\n", JS: JS_SRC},
+  {JT: "import { verify } from '../src/auth';\nfunction checkVerify(a, b, want) {\n  expect(verify(a, b)).toBe(want);\n}\nit('matches', () => { checkVerify('a', 'a', true); });\nit('differs', () => { checkVerify('a', 'b', false); });\n", JS: JS_SRC},
+  [])
+
+case('honest-js-type-level-test',
+  {JT: "import { expectTypeOf } from 'vitest';\nit('x', () => { expectTypeOf<string>().toEqualTypeOf<string>(); });\n", JS: JS_SRC},
+  {JT: "import { expectTypeOf } from 'vitest';\nit('x', () => { expectTypeOf<string>().toEqualTypeOf<string>(); });\nit('narrows', () => { expectTypeOf<number>().not.toEqualTypeOf<string>(); });\n", JS: JS_SRC},
+  [])
+
+case('honest-py-or-of-specific-checks',
+  {T: "def test_cookie(cookie):\n    assert 'domain=.example.com' in cookie\n", S: PY_SRC},
+  {T: "def test_cookie(cookie):\n    assert 'domain=example.com' in cookie or 'domain=.example.com' in cookie\n", S: PY_SRC},
+  [])
+
+case('honest-py-local-helper-asserts',
+  {T: "from app.auth import verify\n\ndef common_check(v):\n    assert v in (True, False)\n\ndef test_a():\n    common_check(verify('a', 'a'))\n", S: PY_SRC},
+  {T: "from app.auth import verify\n\ndef common_check(v):\n    assert v in (True, False)\n\ndef test_a():\n    common_check(verify('a', 'a'))\n\ndef test_b():\n    common_check(verify('a', 'b'))\n", S: PY_SRC},
+  [])
+
+case('honest-py-rename-test-same-body',
+  {T: PY_TEST, S: PY_SRC},
+  {T: PY_TEST.replace("def test_login_rejects_bad_password():", "def test_login_rejects_wrong_password():"), S: PY_SRC},
+  [])
+
+case('py-rename-then-weaken',
+  {T: PY_TEST, S: PY_SRC},
+  {T: PY_TEST.replace("def test_login_rejects_bad_password():\n    with pytest.raises(ValueError, match='bad password'):", "def test_login_rejects_wrong_password():\n    with pytest.raises(Exception):"), S: PY_SRC_CHANGED},
+  [{'rule': 'assertion-weakened', 'file': T, 'test': 'test_login_rejects_wrong_password'}])
+
+case('js-assertion-or-true',
+  {T: "def test_x():\n    assert compute() == 42\n", S: PY_SRC},
+  {T: "def test_x():\n    assert compute() == 42 or True\n", S: PY_SRC_CHANGED},
+  [{'rule': 'assertion-weakened', 'file': T, 'test': 'test_x'}])
+
+case('honest-js-tox-ini-envlist',
+  {T: PY_TEST, S: PY_SRC, 'tox.ini': "[tox]\nenvlist = py38, py39\n[testenv]\ncommands = pytest\n"},
+  {T: PY_TEST, S: PY_SRC, 'tox.ini': "[tox]\nenvlist = py39, py310\n[testenv]\ncommands = pytest\n"},
+  [])
+
 print('fixtures:', len(list(ROOT.iterdir())))
+
+case('honest-js-supertest-variable-named-test',
+  {'test/body.js': "const request = require('supertest');\ndescribe('limit', function () {\n  it('should 413 over limit', function (done) {\n    var test = request(app).post('/');\n    test.set('Content-Type', 'text/plain');\n    test.expect(413, done);\n  });\n});\n", 'lib/x.js': "module.exports = 1;\n"},
+  {'test/body.js': "const request = require('supertest');\ndescribe('limit', function () {\n  it('should 413 over limit', function (done) {\n    var test = request(app).post('/');\n    test.set('Content-Type', 'text/plain');\n    test.expect(413, done);\n  });\n  it('should 413 when inflated', function (done) {\n    var test = request(app).post('/');\n    test.set('Content-Encoding', 'gzip');\n    test.expect(413, done);\n  });\n});\n", 'lib/x.js': "module.exports = 2;\n"},
+  [])
+
+case('honest-js-supertest-bracket-method',
+  {'test/res.js': "const request = require('supertest');\nconst methods = ['get', 'post'];\ndescribe('res', function () {\n  it('x', function (done) { request(app).get('/').expect(200, done); });\n});\n", 'lib/x.js': "module.exports = 1;\n"},
+  {'test/res.js': "const request = require('supertest');\nconst methods = ['get', 'post'];\ndescribe('res', function () {\n  it('x', function (done) { request(app).get('/').expect(200, done); });\n  methods.forEach(function (method) {\n    it('should send ETag for ' + method, function (done) {\n      request(app)[method]('/').expect('ETag', 'W/\"c-5\"').expect(200, done);\n    });\n  });\n});\n", 'lib/x.js': "module.exports = 2;\n"},
+  [])
+print('fixtures:', len(list(ROOT.iterdir())))
+
+
