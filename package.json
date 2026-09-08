@@ -1,0 +1,28 @@
+{
+  "name": "gatekeep",
+  "version": "0.1.0",
+  "description": "Independent verification gate for AI coding agents: blocks the agent from declaring done when it tampered with tests.",
+  "type": "module",
+  "bin": {
+    "gatekeep": "./dist/src/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/",
+    "gatekeep": "node dist/src/cli.js"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@vscode/tree-sitter-wasm": "^0.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.9.3"
+  }
+}
