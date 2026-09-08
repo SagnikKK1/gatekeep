@@ -2,3 +2,4 @@ node_modules/
 dist/
 .gatekeep/
 linkedinposts/
+oauthtoken.txt

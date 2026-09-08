@@ -2,7 +2,7 @@
 
 An independent verification gate for AI coding agents. It runs when the agent tries to say "done" and blocks it when the work was faked instead of finished: tests tampered with, checks weakened, claims that nothing in the session backs up.
 
-Agents under pressure to get a green run will delete tests, mark them skipped, weaken `==` into truthiness, return early before the assertions, wrap assertions in `try/except`, mock away the module they just changed, or loosen numeric tolerances. Published measurements put this between 46% and 93% of runs depending on the model and task. When the tests are locked down, they go after whatever else grades them: a `@ts-ignore`, `continue-on-error` in CI, a strict flag turned off, a pre-commit hook removed. gatekeep detects all of it deterministically from the diff, with no model call, and reads the agent's own summary only to check it for contradictions.
+Agents under pressure to get a green run will delete tests, mark them skipped, weaken `==` into truthiness, return early before the assertions, wrap assertions in `try/except`, mock away the module they just changed, or loosen numeric tolerances. Published measurements put this between 46% and 93% of runs depending on the model and task. When the tests are locked down, they go after whatever else grades them: a `@ts-ignore`, `continue-on-error` in CI, a strict flag turned off, a pre-commit hook removed. gatekeep detects all of it deterministically from the diff, with no model call, and reads the agent's own summary only to check it for contradictions. An opt-in model-backed review covers what a parser cannot: semantic weakening, implementations fitted to the test inputs, and diffs that do not match the task.
 
 **gatekeep does not replace your test suite.** It is a diff gate first: did the tests and checks that existed at the start of the session survive intact. With one opt-in addition, it also keeps the tests the session started with where the agent cannot touch them and runs them against the code the session ended with.
 
@@ -41,6 +41,45 @@ The second run only happens when the first fails. The suite runs in a temporary 
 ## Claim verification
 
 The Stop hook receives the session transcript. gatekeep reads the agent's final message and compares it to what actually happened: whether a test, build, lint or type-check command ran after the last edit when the message says they pass, whether the files it names are the files that changed, and whether git history was rewritten or changes hidden along the way. Claude Code transcripts today; other harnesses when their adapters land. Nothing in the transcript is trusted as evidence of correctness; it is only checked for contradictions.
+
+## Model-backed review
+
+Everything above is deterministic, and deterministic cannot cover everything: a test rewritten to check a weaker property with the same structure, an implementation that special-cases the test inputs, or a deleted test that was genuinely part of the task. Opt in to a second layer that reads the diff with the task statement in hand:
+
+It is optional and off by default. The deterministic gate runs the same with or without it; turn the judge on when you want reasoning about intent on top of the rules, using an API key or your Claude subscription:
+
+```json
+{ "judge": { "model": "claude-opus-5" } }
+```
+
+One hard rule, enforced in code and not in the prompt: **the judge can add findings, annotate them and escalate its own. It can never lift a block, and it cannot change the severity of anything the parser found.** The agent cannot argue with a parser, and the judge is not allowed to argue on its behalf.
+
+What it adds, all at `warn` by default:
+
+- `judge-test-weakened`: an existing test whose new body still passes but no longer checks what the task requires, or a mock that leaves it meaningless.
+- `judge-special-casing`: an implementation that hardcodes expected values, branches on test inputs, or overloads operators to satisfy assertions. This is the gap the original-tests run cannot close.
+- `judge-task-mismatch`: a diff that does something other than the task, or leaves it undone while the final message claims completion.
+- `judge-review-manipulation`: text in the diff written for the reviewer or a model rather than the program: a comment saying the change is approved, asking for no findings, or trying to close the diff element. The prompt treats such text as data; this rule makes the attempt itself visible.
+- A one-line triage on every blocking finding, `consistent with the task` or `looks like evasion`, with a reason. The block stands either way; the annotation is for the human. `"canBlock": true` turns the judge's own warnings into blocks.
+
+How it is kept honest:
+
+- Inputs are the task statement, the deterministic findings as JSON, and bounded unified diffs of the changed test and source files. The agent's final message is passed labeled as an untrusted claim to check, never as context. Everything from the session is escaped inside its element, and the system prompt says all of it is data.
+- The reply is forced through a JSON schema, so an instruction injected in a comment can at most produce a malformed observation. A finding that names a file outside the diff is discarded and counted; a triage entry for an unknown finding is ignored; a duplicate is ignored.
+- The verdict records the model id, a hash of the full prompt and the raw output under `checks.judge`, with the per-file truncation, so a run is auditable even though it is not reproducible.
+
+Mechanics: it runs at stop only, only when test or source files changed, and is cached under the state directory by prompt and provider, so a repeated stop with the same diff costs nothing. `judge.maxDiffBytes` (default 200 KB) bounds the input; a larger diff is truncated per file, tests first, with the truncation recorded in the verdict. `judge.effort` (default `high`) is passed to the model. When the judge cannot run at all it is skipped and the verdict says so as `judge-skipped`, warn; the gate still decides on the deterministic findings.
+
+Where the model comes from is `judge.provider`:
+
+| Provider | Uses | Needs |
+|---|---|---|
+| `auto` (default) | the Anthropic SDK when `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set; otherwise Claude Code if the `claude` command is installed; otherwise the SDK's own profile lookup | one of the below |
+| `anthropic` | the Messages API through the SDK: adaptive thinking, the rubric under a cache breakpoint, the reply forced through the schema | an API key, or an `ant auth login` profile |
+| `claude-code` | Claude Code headless (`claude -p`) with the rubric as its entire system prompt, no settings loaded (so no hooks), no tools, structured output through `--json-schema`. Runs on your Claude subscription | Claude Code installed and logged in, or `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` (that token is for Claude Code only; it is not accepted by the API directly) |
+
+A subscription token in the environment of the agent is enough: hooks inherit it, and the judge's own Claude Code child is marked so gatekeep's hooks never re-enter it. Cost: with the SDK, a typical stop is a few cents and a 200 KB diff at effort `high` is on the order of a quarter to half a dollar; through Claude Code it draws on the subscription instead, and the verdict carries Claude Code's own cost estimate.
+
 
 ## Adapters
 
@@ -139,6 +178,11 @@ A trailer the agent writes into a commit during the session does not count: in a
 | `out-of-scope-change` | warn | The task names specific files, and source files unrelated to those names changed too |
 | `validation-removed` | warn | Net removal of `assert`, `invariant(...)`, `throw new ...Error` guards or `raise ...Error` checks from source |
 | `timeout-increased` | off | A test timeout is raised |
+| `judge-test-weakened` | warn | Model-backed review (opt-in): a test still passes but no longer checks what the task requires |
+| `judge-special-casing` | warn | Model-backed review: the implementation is fitted to the test inputs rather than the behavior |
+| `judge-task-mismatch` | warn | Model-backed review: the diff does something other than the task, or leaves it undone while claiming completion |
+| `judge-review-manipulation` | warn | Model-backed review: text in the diff addressed to the reviewer or a model, telling it to approve, report nothing, or escape the diff |
+| `judge-skipped` | warn | The judge is configured but could not run: no credentials, an API error, or output that did not match the schema (the reason is in the verdict) |
 
 Languages: Python (pytest, unittest), JavaScript/TypeScript (jest, vitest, mocha, chai `expect` and `should` styles, node:test, sinon, supertest chains, `expectTypeOf`), Go (`testing` with `t.Error`/`t.Fatal` inside `if` checks, `t.Run` subtests, table-driven loops, `t.Skip`, build constraints, testify, `monkey.Patch`), Rust (`#[test]` inline and in `tests/`, `assert!`/`assert_eq!`/`assert_ne!` and every `assert_*!` macro, `#[ignore]`, `#[should_panic]`, `#[cfg]` gating, rstest and test_case, assert_cmd and snapbox chains), Java (JUnit 4/5 annotations and assertions, AssertJ and Truth chains, Hamcrest, assumptions, `@ParameterizedTest` sources, Mockito `mock`/`when`/`@Mock`, local helper resolution), and Ruby (RSpec `describe`/`it`, `expect().to` matchers and the old `should` syntax, `xit`/`skip`/`pending`/`:focus`, `allow`/`expect().to receive`, doubles; minitest and test-unit `def test_*`, `assert_*`/`refute_*`, spec-style `must_*`, `skip`, `stub`, Mocha `stubs`/`expects`).
 
@@ -221,7 +265,7 @@ Every run writes a verdict under `~/.gatekeep/repos/<repo>-<hash>/verdicts/` (pa
 }
 ```
 
-`checks.originalTests` is present when `testCommand` is set, and `overrides` lists every finding an override directive lifted, with who granted it.
+`checks.originalTests` is present when `testCommand` is set, `checks.judge` when the model-backed review is configured (status, model, prompt hash, raw output, truncation), and `overrides` lists every finding an override directive lifted, with who granted it. A triaged finding carries `judge: { verdict, reason }`.
 
 ## Configuration
 
@@ -232,6 +276,7 @@ Every run writes a verdict under `~/.gatekeep/repos/<repo>-<hash>/verdicts/` (pa
   "maxBlocks": 3,
   "strict": false,
   "testCommand": "npm test --silent",
+  "judge": { "model": "claude-opus-5", "maxDiffBytes": 204800, "canBlock": false },
   "extraProtectedPaths": ["services/ledger/**"],
   "extraTestGlobs": ["**/qa/**/*.py"],
   "ignore": ["**/generated/**"],
@@ -249,6 +294,8 @@ scripts/e2e.sh    # hook protocol, state layout, installer, tamper resistance, c
 ```
 
 Fixtures are `before/` and `after/` trees plus `expected.json` (optionally with a `severity`), generated by `scripts/gen_fixtures.py`. Prefixes: `js-`, `py-`, `go-`, `java-`, `rs-` are the per-language detections; `rt-`, `rt2-` and `rt3-` are evasion techniques from three red-team passes; `cr2-` came out of a code review; `int-` and `scope-` cover the check-integrity and scope families; `honest-` and `fp-` (including `fp-int-` and `fp-scope-`) are legitimate changes that must not block.
+
+The judge has its own fixtures under `test/fixtures/judge/`: an `input.json` (task, claim, findings, diffs) and a `response.json` the test replays offline, so `npm test` never calls the API. Each response says whether it was `authored` by hand or recorded `live`; `node scripts/judge-record.mjs` re-records them with the prompt hash when a key is present. One live end-to-end test runs when `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set (or `GATEKEEP_JUDGE_LIVE=1` for a profile) and is skipped otherwise.
 
 ### False-positive replay on real history
 
@@ -302,7 +349,8 @@ The agent's edits are stored as attachment references the release does not inclu
 ## Known limits
 
 - Assertion-level analysis exists for Python, JS/TS, Go, Java, Rust and Ruby. Everything else gets the file-level rules and the check-integrity, scope and claim families only.
-- Source-side cheating is only partly covered. Running the original tests against the final code catches tests that were changed to fit the implementation, but an implementation that special-cases the test inputs passes the original tests too. Mutation testing on the changed lines is the planned answer.
+- The model-backed review is opt-in and advisory: its findings default to warn, it costs a model call per changed tree pair, and its judgment is not reproducible (the verdict keeps the prompt hash and raw output instead). Its fixture responses were written by hand in the schema's shape; they are marked `authored` until recorded live.
+- Source-side cheating is covered by the judge only. Running the original tests against the final code catches tests that were changed to fit the implementation, but an implementation that special-cases the test inputs passes the original tests too; without the judge nothing sees it. Mutation testing on the changed lines is the planned deterministic answer.
 - The check-integrity and scope families have one replay pass each on three repositories, which is thinner than the test-integrity rules. `protected-path-edited` at block depends on the default globs matching your layout; express's `examples/auth/` shows what happens when they do not. The claim rules cannot be replayed over commit history at all and rest on fixtures.
 - Claim verification reads the Claude Code transcript format. A format change makes it find nothing rather than fail loudly.
 - `test-deleted` blocks on legitimate removals too. On real history that is the bulk of the residual (see the replay table). The override directive lifts it for one change; the per-rule severity and the block limit are the repo-wide alternatives.
@@ -315,10 +363,11 @@ The agent's edits are stored as attachment references the release does not inclu
 
 ## Roadmap
 
-Test integrity was the first check. The product is independent verification of what an agent did in a session, from state the agent cannot edit: 57 rules across test integrity, check integrity, scope, and claims, plus the original tests run against the final code. Everything below keeps the same architecture: snapshot at start, compare at stop, deterministic rules, no model call. Ordered by what stops someone from adopting the gate.
+Test integrity was the first check. The product is independent verification of what an agent did in a session, from state the agent cannot edit: 57 rules across test integrity, check integrity, scope, and claims, plus the original tests run against the final code. Everything below keeps the same architecture: snapshot at start, compare at stop, deterministic rules, no model call unless the judge is opted in. Ordered by what stops someone from adopting the gate.
 
 ### Delivery and reach
 
+- **`gatekeep report`.** Renders the latest verdict (or a given one) as a single static HTML file: the decision, each finding with the before and after body of the test side by side, the judge annotations when present, and the overrides that applied. No server. It is the screenshot for a pull request comment or a launch post, and the only visual the product needs. The terminal report for the agent and the check annotations on the pull request stay the primary interfaces; a dashboard only makes sense with the hosted check below.
 - **npm publish.** `gatekeep-agent` on the registry so `npx gatekeep-agent install` works without a clone.
 - **Wider false-positive replay.** More repositories and more languages for the check-integrity and scope columns, and a transcript corpus from real sessions for the claim rules, which commit history cannot exercise.
 - **Published catch rate.** Per-rule detection next to the false-positive table. The public ImpossibleBench release does not preserve the agents' test edits (see the inventory above), so this needs a run with a test-editing model and the Inspect logs kept.
