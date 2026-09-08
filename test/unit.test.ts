@@ -8,6 +8,7 @@ import { analyze } from '../src/rules.js';
 import { installClaudeCode, uninstallClaudeCode, GATEKEEP_HOOK_RE } from '../src/install.js';
 import { jsTargetHits, jsSpecifierStem, pythonTargetHits } from '../src/lang.js';
 import { formatReport, decide, type Verdict } from '../src/verdict.js';
+import { splicePackageJson, testRunFindings } from '../src/testrun.js';
 
 test('parseConfig never throws and reports problems', () => {
   assert.equal(parseConfig(null).problems.length, 0);
@@ -90,4 +91,28 @@ test('report caps the listing and counts by decision', () => {
   const warnOnly = [{ rule: 'retry-added', severity: 'warn' as const, file: 'a', message: 'x' }];
   const v2 = { ...v, decision: decide(warnOnly, true), checks: { testIntegrity: { ...v.checks.testIntegrity, findings: warnOnly } } };
   assert.match(formatReport(v2, { forAgent: false }), /BLOCKED — test integrity: 1 blocking, 0 warning/);
+});
+
+test('package.json splice keeps the agent dependencies but restores the test tooling', () => {
+  const base = JSON.stringify({ name: 'x', scripts: { test: 'jest', build: 'tsc' }, jest: { testMatch: ['**/*.test.ts'] }, dependencies: { a: '1' } });
+  const cur = JSON.stringify({ name: 'x', scripts: { test: 'jest --testPathIgnorePatterns auth', build: 'tsc', lint: 'eslint' }, jest: { testMatch: ['**/*.test.ts'], testPathIgnorePatterns: ['auth'] }, dependencies: { a: '1', b: '2' } });
+  const out = JSON.parse(splicePackageJson(base, cur)!) as { scripts: Record<string, string>; jest: Record<string, unknown>; dependencies: Record<string, string> };
+  assert.equal(out.scripts.test, 'jest');
+  assert.equal(out.scripts.lint, 'eslint');
+  assert.deepEqual(out.jest, { testMatch: ['**/*.test.ts'] });
+  assert.deepEqual(out.dependencies, { a: '1', b: '2' });
+  assert.equal(splicePackageJson('nope', cur), null);
+});
+
+test('test-run findings map results to rules', () => {
+  const base = { originalOutput: 'FAILED', currentOutput: '', restoredTestFiles: ['tests/test_a.py'], durationMs: 1 };
+  assert.equal(testRunFindings(null, {}).length, 0);
+  assert.equal(testRunFindings({ ...base, status: 'pass', originalExit: 0, currentExit: null }, {}).length, 0);
+  const f1 = testRunFindings({ ...base, status: 'fail', originalExit: 1, currentExit: 0 }, {});
+  assert.equal(f1[0]?.rule, 'original-tests-fail'); assert.equal(f1[0]?.severity, 'block');
+  const f2 = testRunFindings({ ...base, status: 'fail', originalExit: 1, currentExit: 1 }, {});
+  assert.equal(f2[0]?.rule, 'tests-failing'); assert.equal(f2[0]?.severity, 'warn');
+  const f3 = testRunFindings({ ...base, status: 'fail', originalExit: -1, currentExit: null, reason: 'timeout' }, {});
+  assert.equal(f3[0]?.rule, 'test-run-timeout');
+  assert.equal(testRunFindings({ ...base, status: 'fail', originalExit: 1, currentExit: 0 }, { 'original-tests-fail': 'off' }).length, 0);
 });

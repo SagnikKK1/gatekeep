@@ -1,5 +1,5 @@
 {
-  "name": "gatekeep",
+  "name": "gatekeep-agent",
   "version": "0.1.0",
   "description": "Independent verification gate for AI coding agents: blocks the agent from declaring done when it tampered with tests.",
   "type": "module",
@@ -7,7 +7,11 @@
     "gatekeep": "./dist/src/cli.js"
   },
   "files": [
-    "dist"
+    "dist/src",
+    "README.md",
+    "LICENSE",
+    "action.yml",
+    "scripts/annotate.mjs"
   ],
   "engines": {
     "node": ">=20"
@@ -15,7 +19,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test dist/test/",
-    "gatekeep": "node dist/src/cli.js"
+    "gatekeep": "node dist/src/cli.js",
+    "prepublishOnly": "npm run build && npm test"
   },
   "license": "Apache-2.0",
   "dependencies": {
@@ -24,5 +29,23 @@
   "devDependencies": {
     "@types/node": "^20.19.43",
     "typescript": "^5.9.3"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SagnikKK1/gatekeep.git"
+  },
+  "homepage": "https://github.com/SagnikKK1/gatekeep#readme",
+  "bugs": {
+    "url": "https://github.com/SagnikKK1/gatekeep/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "claude-code",
+    "testing",
+    "verification",
+    "reward-hacking",
+    "git-hooks",
+    "tree-sitter"
+  ],
+  "author": "Sagnik Dey <sagnik1.dey.official@gmail.com>"
 }

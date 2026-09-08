@@ -1,6 +1,8 @@
 import path from 'node:path';
 import type { Finding } from './model.js';
 import type { AnalysisResult } from './rules.js';
+import type { TestRunResult } from './testrun.js';
+import type { Override } from './override.js';
 import { verdictDir, writeAtomic } from './session.js';
 
 export interface Verdict {
@@ -19,14 +21,18 @@ export interface Verdict {
       examined: AnalysisResult['examined'];
       changedSourceFiles: string[];
     };
+    originalTests?: TestRunResult;
   };
   blockCount: number;
   durationMs: number;
+  /** Overrides that lifted at least one finding, with who granted them. */
+  overrides?: Override[];
 }
 
 export function decide(findings: Finding[], strict: boolean): Verdict['decision'] {
-  if (findings.some((f) => f.severity === 'block')) return 'block';
-  if (findings.some((f) => f.severity === 'warn')) return strict ? 'block' : 'warn';
+  const live = findings.filter((f) => !f.overridden);
+  if (live.some((f) => f.severity === 'block')) return 'block';
+  if (live.some((f) => f.severity === 'warn')) return strict ? 'block' : 'warn';
   return 'pass';
 }
 
@@ -44,7 +50,9 @@ const MAX_LISTED = 40;
 
 /** Human/agent-readable report. Written to stderr on block so the agent sees it as its next instruction. */
 export function formatReport(v: Verdict, opts: { forAgent: boolean; verdictPath?: string }): string {
-  const f = v.checks.testIntegrity.findings;
+  const all = v.checks.testIntegrity.findings;
+  const lifted = all.filter((x) => x.overridden);
+  const f = all.filter((x) => !x.overridden);
   const blocking = v.decision === 'block';
   // Under strict mode warnings block; count by what actually decided.
   const blocks = f.filter((x) => x.severity === 'block' || (blocking && x.severity === 'warn' && !f.some((y) => y.severity === 'block')));
@@ -53,6 +61,8 @@ export function formatReport(v: Verdict, opts: { forAgent: boolean; verdictPath?
   const head = v.decision === 'block' ? 'BLOCKED' : v.decision === 'warn' ? 'PASSED WITH WARNINGS' : 'PASSED';
   const ex = v.checks.testIntegrity.examined.length, src = v.checks.testIntegrity.changedSourceFiles.length;
   lines.push(`GATEKEEP ${head} — test integrity: ${blocks.length} blocking, ${warns.length} warning(s); ${ex} test file(s) examined, ${src} source file(s) changed.`);
+  const ot = v.checks.originalTests;
+  if (ot) lines.push(`  original tests vs current code: ${ot.status}${ot.originalExit !== null ? ` (exit ${ot.originalExit}${ot.currentExit !== null ? `, edited tests exit ${ot.currentExit}` : ''})` : ''}${ot.reason ? ` — ${ot.reason}` : ''}, ${(ot.durationMs / 1000).toFixed(1)}s`);
   const clip = (t: string, n: number) => (t.length > n ? t.slice(0, n - 1) + '…' : t);
   const fmt = (x: Finding) => {
     const loc = clip(x.line ? `${x.file}:${x.line}` : x.file, 200);
@@ -70,6 +80,7 @@ export function formatReport(v: Verdict, opts: { forAgent: boolean; verdictPath?
     for (const x of rest) byRule.set(x.rule, (byRule.get(x.rule) ?? 0) + 1);
     lines.push(`  ... and ${rest.length} more: ${[...byRule].map(([r, n]) => `${r} ×${n}`).join(', ')} (see the verdict file)`);
   }
+  for (const x of lifted) lines.push(`  [allowed] ${x.rule}  ${clip(x.line ? `${x.file}:${x.line}` : x.file, 200)}${x.test ? ` [${clip(x.test, 120)}]` : ''} — lifted by ${x.overridden}`);
   if (v.decision === 'block' && opts.forAgent) {
     lines.push('');
     lines.push('You may not finish yet. Restore the tests to their original strength and make the implementation satisfy them.');

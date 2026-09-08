@@ -7,6 +7,8 @@ import type { FileChange } from './model.js';
 
 const execFileP = promisify(execFile);
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+/** Read-only object commands do not need the repository index; a nonexistent path keeps a corrupt or mid-write index from failing them. */
+const NO_INDEX = { GIT_INDEX_FILE: path.join(os.tmpdir(), 'gatekeep-no-index') };
 
 export class GitError extends Error {
   constructor(message: string, public readonly args: string[]) { super(message); }
@@ -33,11 +35,11 @@ export async function gitDir(cwd: string): Promise<string> {
 }
 
 export async function headTree(cwd: string): Promise<string> {
-  try { return (await git(cwd, ['rev-parse', 'HEAD^{tree}'])).trim(); } catch { return EMPTY_TREE; }
+  try { return (await git(cwd, ['rev-parse', 'HEAD^{tree}'], NO_INDEX)).trim(); } catch { return EMPTY_TREE; }
 }
 
 export async function resolveTree(cwd: string, ref: string): Promise<string> {
-  return (await git(cwd, ['rev-parse', '--verify', '-q', `${ref}^{tree}`])).trim();
+  return (await git(cwd, ['rev-parse', '--verify', '-q', `${ref}^{tree}`], NO_INDEX)).trim();
 }
 
 /**
@@ -50,10 +52,25 @@ export async function snapshotWorkingTree(cwd: string): Promise<string> {
   const env = { GIT_INDEX_FILE: idx };
   try {
     let seeded = false;
-    try { await fs.copyFile(path.join(await gitDir(cwd), 'index'), idx); seeded = true; await git(cwd, ['update-index', '-q', '--refresh'], env).catch(() => undefined); } catch { /* no index yet */ }
+    try {
+      const real = path.join(await gitDir(cwd), 'index');
+      await fs.copyFile(real, idx);
+      // Keep the original index mtime: git treats entries whose file mtime is not older than the index as "racy" and
+      // re-hashes them. A fresh copy would look newer than every file and let a same-second, same-size edit go unseen.
+      const st = await fs.stat(real);
+      await fs.utimes(idx, st.atime, st.mtime);
+      seeded = true;
+    } catch { /* no index yet */ }
     if (!seeded) { try { await git(cwd, ['read-tree', 'HEAD'], env); } catch { /* no HEAD yet */ } }
-    try { await git(cwd, ['add', '-A', '--sparse', '--', '.'], env); }
-    catch { await git(cwd, ['add', '-A', '--', '.'], env); } // older git without --sparse
+    const addAll = async () => { try { await git(cwd, ['add', '-A', '--sparse', '--', '.'], env); } catch { await git(cwd, ['add', '-A', '--', '.'], env); } }; // older git without --sparse
+    try { await addAll(); }
+    catch (e) {
+      // A copy taken while git was rewriting the index can be unreadable: start over from HEAD instead of failing the gate.
+      if (!seeded) throw e;
+      await fs.rm(idx, { force: true });
+      try { await git(cwd, ['read-tree', 'HEAD'], env); } catch { /* no HEAD yet */ }
+      await addAll();
+    }
     return (await git(cwd, ['write-tree'], env)).trim();
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
@@ -61,7 +78,7 @@ export async function snapshotWorkingTree(cwd: string): Promise<string> {
 }
 
 export async function catFile(cwd: string, tree: string, p: string): Promise<string | undefined> {
-  try { return await git(cwd, ['cat-file', '-p', `${tree}:${p}`]); } catch { return undefined; }
+  try { return await git(cwd, ['cat-file', '-p', `${tree}:${p}`], NO_INDEX); } catch { return undefined; }
 }
 
 /** One long-lived `git cat-file --batch` process; reads blobs sequentially without a subprocess per file. */
@@ -72,7 +89,7 @@ export class BlobBatch {
   private closed = false;
   private queue: Promise<unknown> = Promise.resolve();
   constructor(cwd: string) {
-    this.proc = spawn('git', ['cat-file', '--batch'], { cwd, stdio: ['pipe', 'pipe', 'ignore'] });
+    this.proc = spawn('git', ['cat-file', '--batch'], { cwd, stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, ...NO_INDEX } });
     this.proc.stdout!.on('data', (d: Buffer) => { this.buf = Buffer.concat([this.buf, d]); this.wake?.(); });
     this.proc.on('close', () => { this.closed = true; this.wake?.(); });
   }
@@ -114,7 +131,7 @@ export interface DiffOptions {
 export async function diffTrees(cwd: string, base: string, cur: string, opts: DiffOptions = {}): Promise<FileChange[]> {
   const maxBytes = opts.maxBytes ?? 8 * 1024 * 1024;
   const shouldLoad = opts.shouldLoad ?? (() => true);
-  const out = await git(cwd, ['diff-tree', '-r', '-M', '--name-status', '-z', base, cur]);
+  const out = await git(cwd, ['diff-tree', '-r', '-M', '--name-status', '-z', base, cur], NO_INDEX);
   const parts = out.split('\0').filter((s) => s.length > 0);
   const changes: FileChange[] = [];
   const batch = new BlobBatch(cwd);

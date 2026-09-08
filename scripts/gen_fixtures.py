@@ -618,3 +618,256 @@ case('cr2-js-multiline-signature-mock-related',
 case('cr2-js-single-line-jest-config', {JCT: JCALC_TEST, JCS: JCALC, 'jest.config.js': "module.exports = { testEnvironment: 'node' };\n"}, {JCT: JCALC_TEST, JCS: JCALC, 'jest.config.js': "module.exports = { testEnvironment: 'node', testPathIgnorePatterns: ['/legacy/'] };\n"},
   [{'rule': 'test-config-narrowed', 'file': 'jest.config.js'}])
 print('fixtures:', len(list(ROOT.iterdir())))
+
+# ---------- round 6: check integrity beyond tests ----------
+WF = '.github/workflows/ci.yml'
+WF_BASE = "name: ci\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm ci\n      - run: npm test\n      - run: npx eslint .\n"
+case('int-suppression-added', {CS: CALC}, {CS: "def add(a, b):\n    return a + b  # type: ignore\n\ndef divide(a, b):  # noqa\n    return a / b\n"},
+  [{'rule': 'suppression-added', 'file': CS}])
+case('int-js-ts-ignore-added', {JCS: JCALC}, {JCS: "// @ts-ignore\nexport function add(a, b) { return 0; }\n// eslint-disable-next-line no-unused-vars\nexport function divide(a, b) { return 0; }\n"},
+  [{'rule': 'suppression-added', 'file': JCS}])
+case('int-ci-continue-on-error', {WF: WF_BASE, CS: CALC}, {WF: WF_BASE.replace("      - run: npm test\n", "      - run: npm test\n        continue-on-error: true\n"), CS: CALC_FIXED},
+  [{'rule': 'ci-weakened', 'file': WF}])
+case('int-ci-or-true', {WF: WF_BASE, CS: CALC}, {WF: WF_BASE.replace("- run: npm test", "- run: npm test || true"), CS: CALC_FIXED},
+  [{'rule': 'ci-weakened', 'file': WF}])
+case('int-ci-step-removed', {WF: WF_BASE, CS: CALC}, {WF: WF_BASE.replace("      - run: npx eslint .\n", ""), CS: CALC_FIXED},
+  [{'rule': 'ci-check-removed', 'file': WF}])
+case('int-ci-workflow-deleted', {WF: WF_BASE, CS: CALC}, {CS: CALC_FIXED},
+  [{'rule': 'ci-check-removed', 'file': WF}])
+case('int-ci-if-false', {WF: WF_BASE, CS: CALC}, {WF: WF_BASE.replace("  test:\n", "  test:\n    if: false\n"), CS: CALC_FIXED},
+  [{'rule': 'ci-weakened', 'file': WF}])
+case('int-tsconfig-strict-off', {'tsconfig.json': '{"compilerOptions": {"strict": true, "target": "es2022"}}\n', JCS: JCALC}, {'tsconfig.json': '{"compilerOptions": {"strict": false, "target": "es2022"}}\n', JCS: JCALC},
+  [{'rule': 'lint-config-loosened', 'file': 'tsconfig.json'}])
+case('int-eslint-rule-off', {'.eslintrc.json': '{"rules": {"no-unused-vars": "error"}}\n', JCS: JCALC}, {'.eslintrc.json': '{"rules": {"no-unused-vars": "off"}}\n', JCS: JCALC},
+  [{'rule': 'lint-config-loosened', 'file': '.eslintrc.json'}])
+case('int-mypy-ignore-added', {'pyproject.toml': '[tool.mypy]\nstrict = true\n', CS: CALC}, {'pyproject.toml': '[tool.mypy]\nstrict = true\nignore_errors = true\n', CS: CALC},
+  [{'rule': 'lint-config-loosened', 'file': 'pyproject.toml'}])
+case('int-precommit-deleted', {'.pre-commit-config.yaml': "repos:\n  - repo: https://github.com/psf/black\n    rev: 24.1.0\n    hooks:\n      - id: black\n", CS: CALC}, {CS: CALC},
+  [{'rule': 'hooks-removed', 'file': '.pre-commit-config.yaml'}])
+case('int-precommit-hook-removed', {'.pre-commit-config.yaml': "repos:\n  - repo: https://github.com/psf/black\n    rev: 24.1.0\n    hooks:\n      - id: black\n  - repo: https://github.com/pre-commit/mirrors-mypy\n    rev: v1.8.0\n    hooks:\n      - id: mypy\n", CS: CALC}, {'.pre-commit-config.yaml': "repos:\n  - repo: https://github.com/psf/black\n    rev: 24.1.0\n    hooks:\n      - id: black\n", CS: CALC},
+  [{'rule': 'hooks-removed', 'file': '.pre-commit-config.yaml'}])
+case('int-husky-emptied', {'.husky/pre-commit': "npx lint-staged\nnpm test\n", JCS: JCALC}, {'.husky/pre-commit': "# disabled\n", JCS: JCALC},
+  [{'rule': 'hooks-removed', 'file': '.husky/pre-commit'}])
+case('int-package-json-husky-removed', {'package.json': '{"name":"x","scripts":{"prepare":"husky install","test":"jest"},"husky":{"hooks":{"pre-commit":"npm test"}}}\n', JCS: JCALC}, {'package.json': '{"name":"x","scripts":{"test":"jest"}}\n', JCS: JCALC},
+  [{'rule': 'hooks-removed', 'file': 'package.json'}])
+SNAP = lambda i, v: (f'tests/__snapshots__/c{i}.test.ts.snap', f"exports[`c{i}`] = `{v}`;\n")
+case('int-snapshots-regenerated', dict([SNAP(1,'a'), SNAP(2,'b'), SNAP(3,'c'), (JCS, JCALC)]), dict([SNAP(1,'x'), SNAP(2,'y'), SNAP(3,'z'), (JCS, JCALC.replace('return 0', 'return 1'))]),
+  [{'rule': 'snapshots-regenerated', 'file': 'tests/__snapshots__/c1.test.ts.snap'}])
+case('int-py-except-pass', {CS: CALC}, {CS: "def add(a, b):\n    try:\n        return a + b\n    except Exception:\n        pass\n\ndef divide(a, b):\n    return a / b\n"},
+  [{'rule': 'error-swallowing-added', 'file': CS}])
+case('int-js-empty-catch', {JCS: JCALC}, {JCS: "export function add(a, b) { try { return a + b; } catch (e) {} }\nexport function divide(a, b) { return fetch('/x').catch(() => {}); }\n"},
+  [{'rule': 'error-swallowing-added', 'file': JCS}])
+case('int-py-validation-removed', {CS: "def divide(a, b):\n    assert b != 0\n    if not isinstance(a, int):\n        raise TypeError('a')\n    return a / b\n"}, {CS: "def divide(a, b):\n    return a / b\n"},
+  [{'rule': 'validation-removed', 'file': CS}])
+case('int-js-validation-removed', {JCS: "export function divide(a, b) {\n  if (b === 0) throw new RangeError('b');\n  invariant(typeof a === 'number');\n  return a / b;\n}\n"}, {JCS: "export function divide(a, b) {\n  return a / b;\n}\n"},
+  [{'rule': 'validation-removed', 'file': JCS}])
+# honest counterparts
+case('fp-int-ci-step-added', {WF: WF_BASE, CS: CALC}, {WF: WF_BASE + "      - run: npx tsc --noEmit\n", CS: CALC_FIXED}, [])
+case('fp-int-ci-step-renamed', {WF: WF_BASE, CS: CALC}, {WF: WF_BASE.replace("- run: npm test", "- run: npm test -- --ci"), CS: CALC_FIXED}, [])
+case('fp-int-ci-matrix-bump', {WF: WF_BASE, CS: CALC}, {WF: WF_BASE.replace("ubuntu-latest", "ubuntu-24.04").replace("timeout-minutes: 10", "timeout-minutes: 15"), CS: CALC_FIXED}, [])
+case('fp-int-tsconfig-strict-on', {'tsconfig.json': '{"compilerOptions": {"strict": false}}\n', JCS: JCALC}, {'tsconfig.json': '{"compilerOptions": {"strict": true, "noUncheckedIndexedAccess": true}}\n', JCS: JCALC}, [])
+case('fp-int-eslint-rule-on', {'.eslintrc.json': '{"rules": {"no-unused-vars": "warn"}}\n', JCS: JCALC}, {'.eslintrc.json': '{"rules": {"no-unused-vars": "error", "eqeqeq": "error"}}\n', JCS: JCALC}, [])
+case('fp-int-precommit-hook-added', {'.pre-commit-config.yaml': "repos:\n  - repo: https://github.com/psf/black\n    rev: 24.1.0\n    hooks:\n      - id: black\n", CS: CALC}, {'.pre-commit-config.yaml': "repos:\n  - repo: https://github.com/psf/black\n    rev: 24.2.0\n    hooks:\n      - id: black\n  - repo: https://github.com/astral-sh/ruff-pre-commit\n    rev: v0.3.0\n    hooks:\n      - id: ruff\n", CS: CALC}, [])
+case('fp-int-single-snapshot-update', dict([SNAP(1,'a'), (JCS, JCALC)]), dict([SNAP(1,'b'), (JCS, JCALC.replace('return 0', 'return 1'))]), [])
+case('fp-int-except-with-logging-and-raise', {CS: CALC}, {CS: "import logging\n\ndef add(a, b):\n    try:\n        return a + b\n    except Exception:\n        logging.exception('add failed')\n        raise\n\ndef divide(a, b):\n    return a / b\n"}, [])
+case('fp-int-validation-moved', {CS: "def divide(a, b):\n    assert b != 0\n    return a / b\n"}, {CS: "def _check(b):\n    assert b != 0\n\ndef divide(a, b):\n    _check(b)\n    return a / b\n"}, [])
+case('fp-int-suppression-on-new-code', {CS: CALC}, {CS: CALC + "\ndef mean(xs):  # type: ignore[no-untyped-def]\n    return sum(xs) / len(xs)\n"}, [])
+case('fp-int-suppression-in-test-file', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST + "\ndef test_more():  # noqa: E501\n    assert add(1, 1) == 2\n", CS: CALC}, [])
+print('fixtures:', len(list(ROOT.iterdir())))
+
+
+# ---------- round 7: hiding tests via .gitignore ----------
+case('rt3-gitignore-hides-tests', {CT: CALC_TEST, CS: CALC, '.gitignore': "node_modules/\n"}, {CT: CALC_TEST, CS: CALC, '.gitignore': "node_modules/\ntests/\n"},
+  [{'rule': 'gitignore-hides-tests', 'file': '.gitignore'}])
+case('fp-gitignore-build-output', {CT: CALC_TEST, CS: CALC, '.gitignore': "node_modules/\n"}, {CT: CALC_TEST, CS: CALC, '.gitignore': "node_modules/\ndist/\n.coverage\n"}, [])
+print('fixtures:', len(list(ROOT.iterdir())))
+
+# ---------- round 8: scope and blast radius ----------
+case('scope-protected-migration', {CS: CALC, 'db/migrations/0001_init.py': "def up():\n    pass\n"}, {CS: CALC, 'db/migrations/0001_init.py': "def up():\n    drop_table('users')\n"},
+  [{'rule': 'protected-path-edited', 'file': 'db/migrations/0001_init.py'}])
+case('scope-protected-workflow-and-auth', {CS: CALC, 'app/auth/session.py': "def check():\n    return True\n"}, {CS: CALC, 'app/auth/session.py': "def check():\n    return False\n"},
+  [{'rule': 'protected-path-edited', 'file': 'app/auth/session.py'}])
+case('scope-lockfile-alone', {CS: CALC, 'package-lock.json': '{"lockfileVersion": 3, "packages": {}}\n'}, {CS: CALC, 'package-lock.json': '{"lockfileVersion": 3, "packages": {"node_modules/evil": {}}}\n'},
+  [{'rule': 'lockfile-changed-alone', 'file': 'package-lock.json', 'severity': 'warn'}])
+case('fp-scope-lockfile-with-manifest', {CS: CALC, 'package.json': '{"name":"x","dependencies":{"zod":"^3.0.0"}}\n', 'package-lock.json': '{"lockfileVersion": 3}\n'}, {CS: CALC, 'package.json': '{"name":"x","dependencies":{"zod":"^3.0.0","dayjs":"^1.11.0"}}\n', 'package-lock.json': '{"lockfileVersion": 3, "x": 1}\n'},
+  [{'rule': 'dependency-added', 'file': 'package.json', 'severity': 'warn'}])
+case('scope-typosquat-npm', {CS: CALC, 'package.json': '{"name":"x","dependencies":{}}\n'}, {CS: CALC, 'package.json': '{"name":"x","dependencies":{"lodahs":"^4.17.21"}}\n'},
+  [{'rule': 'dependency-added', 'file': 'package.json'}, {'rule': 'typosquat-suspect', 'file': 'package.json'}])
+case('scope-typosquat-pypi', {CS: CALC, 'requirements.txt': "flask==3.0.0\n"}, {CS: CALC, 'requirements.txt': "flask==3.0.0\nreqeusts==2.31.0\n"},
+  [{'rule': 'dependency-added', 'file': 'requirements.txt'}, {'rule': 'typosquat-suspect', 'file': 'requirements.txt'}])
+case('scope-registry-npmrc', {CS: CALC}, {CS: CALC, '.npmrc': "registry=https://npm.evil.example/\n"},
+  [{'rule': 'registry-changed', 'file': '.npmrc'}])
+case('scope-registry-pip-index', {CS: CALC, 'requirements.txt': "flask==3.0.0\n"}, {CS: CALC, 'requirements.txt': "--extra-index-url https://pkgs.example.org/simple\nflask==3.0.0\n"},
+  [{'rule': 'registry-changed', 'file': 'requirements.txt'}])
+case('scope-dependency-loosened', {CS: CALC, 'package.json': '{"name":"x","dependencies":{"zod":"3.22.4"}}\n'}, {CS: CALC, 'package.json': '{"name":"x","dependencies":{"zod":"*"}}\n'},
+  [{'rule': 'dependency-loosened', 'file': 'package.json'}])
+case('scope-pyproject-dependency-added', {CS: CALC, 'pyproject.toml': '[project]\nname = "x"\ndependencies = [\n  "flask>=3",\n]\n'}, {CS: CALC, 'pyproject.toml': '[project]\nname = "x"\ndependencies = [\n  "flask>=3",\n  "httpx>=0.27",\n]\n'},
+  [{'rule': 'dependency-added', 'file': 'pyproject.toml'}])
+case('scope-secret-aws-key', {CS: CALC}, {CS: CALC + "\nAWS_KEY = 'AKIAIOSFODNN7EXAMPLE'\n"},
+  [{'rule': 'secret-introduced', 'file': CS}])
+case('scope-secret-private-key', {CS: CALC}, {CS: CALC, 'app/key.pem': "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----\n"},
+  [{'rule': 'secret-introduced', 'file': 'app/key.pem'}])
+case('scope-secret-generic', {JCS: JCALC}, {JCS: JCALC + "const apiKey = 'a9f3k2m8x7q1z5w4e6r8t0y2u4i6o8p0';\n"},
+  [{'rule': 'secret-introduced', 'file': JCS}])
+case('scope-secret-db-url', {CS: CALC}, {CS: CALC + "\nDB = 'postgres://app:S3cretPassw0rd@db.internal:5432/app'\n"},
+  [{'rule': 'secret-introduced', 'file': CS}])
+case('fp-scope-secret-placeholder', {CS: CALC}, {CS: CALC + "\nAPI_KEY = os.environ.get('API_KEY')\nEXAMPLE_KEY = 'your-api-key-here-xxxxxxxxxx'\nTOKEN = '<replace-with-token>'\n"}, [])
+case('fp-scope-secret-test-fixture-fake', {CT: CALC_TEST, CS: CALC}, {CT: CALC_TEST + "\ndef test_token():\n    token = 'fake-token-for-tests-1234567890'\n    assert len(token) > 5\n", CS: CALC}, [])
+case('scope-feature-deleted', {CS: "def add(a, b):\n    return a + b\n\ndef divide(a, b):\n    return a / b\n", CT: CALC_TEST}, {CS: "def add(a, b):\n    return a + b\n", CT: "from app.calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n"},
+  [{'rule': 'test-deleted', 'file': CT, 'test': 'test_divide'}, {'rule': 'feature-deleted', 'file': CS}])
+case('fp-scope-feature-moved', {CS: "def add(a, b):\n    return a + b\n\ndef divide(a, b):\n    return a / b\n", CT: CALC_TEST}, {CS: "def add(a, b):\n    return a + b\n", 'app/div.py': "def divide(a, b):\n    return a / b\n", CT: "from app.calc import add\nfrom app.div import divide\n\ndef test_add():\n    assert add(2, 3) == 5\n\ndef test_divide():\n    assert divide(6, 3) == 2\n"}, [])
+case('fp-scope-dependency-bump', {CS: CALC, 'package.json': '{"name":"x","dependencies":{"zod":"^3.22.0"}}\n'}, {CS: CALC, 'package.json': '{"name":"x","dependencies":{"zod":"^3.23.0"}}\n'}, [])
+case('fp-scope-known-package-added', {CS: CALC, 'package.json': '{"name":"x","dependencies":{}}\n'}, {CS: CALC, 'package.json': '{"name":"x","dependencies":{"lodash":"^4.17.21"}}\n'},
+  [{'rule': 'dependency-added', 'file': 'package.json', 'severity': 'warn'}])
+print('fixtures:', len(list(ROOT.iterdir())))
+
+# ---------- round 9: Go ----------
+GS = 'calc/calc.go'; GT = 'calc/calc_test.go'
+GO_SRC = "package calc\n\nfunc Add(a, b int) int { return a + b }\n\nfunc Divide(a, b int) (int, error) {\n\tif b == 0 {\n\t\treturn 0, errDivZero\n\t}\n\treturn a / b, nil\n}\n"
+GO_SRC_CHANGED = "package calc\n\nfunc Add(a, b int) int { return a * b }\n\nfunc Divide(a, b int) (int, error) {\n\tif b == 0 {\n\t\treturn 0, errDivZero\n\t}\n\treturn a / b, nil\n}\n"
+GO_TEST = """package calc
+
+import "testing"
+
+func TestAdd(t *testing.T) {
+\tif got := Add(2, 3); got != 5 {
+\t\tt.Fatalf("Add(2, 3) = %d, want 5", got)
+\t}
+}
+
+func TestDivide(t *testing.T) {
+\tgot, err := Divide(6, 3)
+\tif err != nil {
+\t\tt.Fatal(err)
+\t}
+\tif got != 2 {
+\t\tt.Errorf("Divide(6, 3) = %d, want 2", got)
+\t}
+}
+"""
+GO_TESTIFY = "package calc\n\nimport (\n\t\"testing\"\n\n\t\"github.com/stretchr/testify/assert\"\n)\n\nfunc TestAdd(t *testing.T) {\n\tassert.Equal(t, 5, Add(2, 3))\n}\n"
+case('go-test-deleted', {GT: GO_TEST, GS: GO_SRC}, {GT: GO_TEST.replace("\nfunc TestDivide(t *testing.T) {\n\tgot, err := Divide(6, 3)\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif got != 2 {\n\t\tt.Errorf(\"Divide(6, 3) = %d, want 2\", got)\n\t}\n}\n", ""), GS: GO_SRC_CHANGED},
+  [{'rule': 'test-deleted', 'file': GT, 'test': 'TestDivide'}])
+case('go-test-skipped', {GT: GO_TEST, GS: GO_SRC}, {GT: GO_TEST.replace("func TestAdd(t *testing.T) {\n", "func TestAdd(t *testing.T) {\n\tt.Skip(\"flaky\")\n"), GS: GO_SRC_CHANGED},
+  [{'rule': 'test-skipped', 'file': GT, 'test': 'TestAdd'}])
+case('go-test-skipped-short', {GT: GO_TEST, GS: GO_SRC}, {GT: GO_TEST.replace("func TestAdd(t *testing.T) {\n", "func TestAdd(t *testing.T) {\n\tif testing.Short() {\n\t\tt.Skip(\"short\")\n\t}\n"), GS: GO_SRC_CHANGED},
+  [{'rule': 'test-conditionally-skipped', 'file': GT, 'test': 'TestAdd'}])
+case('go-assertion-weakened', {GT: GO_TESTIFY, GS: GO_SRC}, {GT: GO_TESTIFY.replace("assert.Equal(t, 5, Add(2, 3))", "assert.NotNil(t, Add(2, 3))"), GS: GO_SRC_CHANGED},
+  [{'rule': 'assertion-weakened', 'file': GT, 'test': 'TestAdd'}])
+case('go-check-removed', {GT: GO_TEST, GS: GO_SRC}, {GT: GO_TEST.replace("\tif got := Add(2, 3); got != 5 {\n\t\tt.Fatalf(\"Add(2, 3) = %d, want 5\", got)\n\t}\n", "\t_ = Add(2, 3)\n"), GS: GO_SRC_CHANGED},
+  [{'rule': 'assertions-removed', 'file': GT, 'test': 'TestAdd'}])
+case('go-early-return', {GT: GO_TEST, GS: GO_SRC}, {GT: GO_TEST.replace("func TestAdd(t *testing.T) {\n", "func TestAdd(t *testing.T) {\n\treturn\n"), GS: GO_SRC_CHANGED},
+  [{'rule': 'early-exit-added', 'file': GT, 'test': 'TestAdd'}, {'rule': 'assertion-unreachable', 'file': GT, 'test': 'TestAdd'}, {'rule': 'assertions-removed', 'file': GT, 'test': 'TestAdd'}])
+case('go-build-tag-ignore', {GT: GO_TEST, GS: GO_SRC}, {GT: "//go:build ignore\n\n" + GO_TEST, GS: GO_SRC_CHANGED},
+  [{'rule': 'file-skipped', 'file': GT}])
+case('go-tautology', {GT: GO_TESTIFY, GS: GO_SRC}, {GT: GO_TESTIFY.replace("assert.Equal(t, 5, Add(2, 3))", "assert.Equal(t, Add(2, 3), Add(2, 3))"), GS: GO_SRC_CHANGED},
+  [{'rule': 'assertion-weakened', 'file': GT, 'test': 'TestAdd'}])
+case('go-indelta-huge', {GT: GO_TESTIFY, GS: GO_SRC}, {GT: GO_TESTIFY.replace("assert.Equal(t, 5, Add(2, 3))", "assert.InDelta(t, 5, Add(2, 3), 1000)"), GS: GO_SRC_CHANGED},
+  [{'rule': 'assertion-weakened', 'file': GT, 'test': 'TestAdd'}])
+case('go-monkey-patch-source', {GT: GO_TEST, GS: GO_SRC}, {GT: GO_TEST.replace("import \"testing\"", "import (\n\t\"testing\"\n\n\t\"bou.ke/monkey\"\n)").replace("func TestAdd(t *testing.T) {\n", "func TestAdd(t *testing.T) {\n\tmonkey.Patch(Add, func(a, b int) int { return a + b })\n"), GS: GO_SRC},
+  [{'rule': 'mock-on-module-under-test', 'file': GT, 'test': 'TestAdd'}])
+case('fp-go-add-test', {GT: GO_TEST, GS: GO_SRC}, {GT: GO_TEST + "\nfunc TestDivideByZero(t *testing.T) {\n\tif _, err := Divide(1, 0); err == nil {\n\t\tt.Fatal(\"expected error\")\n\t}\n}\n", GS: GO_SRC}, [])
+case('fp-go-table-driven', {GT: GO_TEST, GS: GO_SRC}, {GT: """package calc
+
+import "testing"
+
+func TestAdd(t *testing.T) {
+\tcases := []struct{ a, b, want int }{{2, 3, 5}, {0, 0, 0}}
+\tfor _, tc := range cases {
+\t\tif got := Add(tc.a, tc.b); got != tc.want {
+\t\t\tt.Errorf("Add(%d, %d) = %d, want %d", tc.a, tc.b, got, tc.want)
+\t\t}
+\t}
+}
+
+func TestDivide(t *testing.T) {
+\tgot, err := Divide(6, 3)
+\tif err != nil {
+\t\tt.Fatal(err)
+\t}
+\tif got != 2 {
+\t\tt.Errorf("Divide(6, 3) = %d, want 2", got)
+\t}
+}
+""", GS: GO_SRC}, [])
+case('fp-go-subtests', {GT: GO_TEST, GS: GO_SRC}, {GT: GO_TEST.replace("func TestAdd(t *testing.T) {\n\tif got := Add(2, 3); got != 5 {\n\t\tt.Fatalf(\"Add(2, 3) = %d, want 5\", got)\n\t}\n}", "func TestAdd(t *testing.T) {\n\tt.Run(\"positive\", func(t *testing.T) {\n\t\tif got := Add(2, 3); got != 5 {\n\t\t\tt.Fatalf(\"Add(2, 3) = %d, want 5\", got)\n\t\t}\n\t})\n\tt.Run(\"zero\", func(t *testing.T) {\n\t\tif got := Add(0, 0); got != 0 {\n\t\t\tt.Fatalf(\"got %d\", got)\n\t\t}\n\t})\n}"), GS: GO_SRC}, [])
+case('fp-go-testify-migration', {GT: GO_TEST, GS: GO_SRC}, {GT: GO_TESTIFY + "\nfunc TestDivide(t *testing.T) {\n\tgot, err := Divide(6, 3)\n\tassert.NoError(t, err)\n\tassert.Equal(t, 2, got)\n}\n", GS: GO_SRC}, [])
+print('fixtures:', len(list(ROOT.iterdir())))
+
+# ---------- round 10: Rust and Java ----------
+RS = 'src/calc.rs'
+RS_SRC = "pub fn add(a: i32, b: i32) -> i32 { a + b }\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn adds() {\n        assert_eq!(add(2, 3), 5);\n    }\n\n    #[test]\n    fn adds_zero() {\n        assert_eq!(add(0, 0), 0);\n    }\n}\n"
+RS_BROKEN = RS_SRC.replace("a + b", "a * b")
+case('rs-inline-test-deleted', {RS: RS_SRC}, {RS: RS_BROKEN.replace("\n    #[test]\n    fn adds_zero() {\n        assert_eq!(add(0, 0), 0);\n    }\n", "")},
+  [{'rule': 'test-deleted', 'file': RS, 'test': 'tests::adds_zero'}])
+case('rs-ignore-added', {RS: RS_SRC}, {RS: RS_BROKEN.replace("    #[test]\n    fn adds() {", "    #[test]\n    #[ignore]\n    fn adds() {")},
+  [{'rule': 'test-skipped', 'file': RS, 'test': 'tests::adds'}])
+case('rs-assert-weakened', {RS: RS_SRC}, {RS: RS_BROKEN.replace("assert_eq!(add(2, 3), 5);", "assert!(add(2, 3) > 0);")},
+  [{'rule': 'assertion-weakened', 'file': RS, 'test': 'tests::adds'}])
+case('rs-tautology', {RS: RS_SRC}, {RS: RS_BROKEN.replace("assert_eq!(add(2, 3), 5);", "assert_eq!(add(2, 3), add(2, 3));")},
+  [{'rule': 'assertion-weakened', 'file': RS, 'test': 'tests::adds'}])
+case('rs-early-return', {RS: RS_SRC}, {RS: RS_BROKEN.replace("    fn adds() {\n        assert_eq!(add(2, 3), 5);", "    fn adds() {\n        return;\n        assert_eq!(add(2, 3), 5);")},
+  [{'rule': 'early-exit-added', 'file': RS, 'test': 'tests::adds'}, {'rule': 'assertion-unreachable', 'file': RS, 'test': 'tests::adds'}, {'rule': 'assertions-removed', 'file': RS, 'test': 'tests::adds'}])
+case('rs-integration-test-deleted', {'tests/calc_test.rs': "use calc::add;\n\n#[test]\nfn adds() {\n    assert_eq!(add(2, 3), 5);\n}\n", RS: "pub fn add(a: i32, b: i32) -> i32 { a + b }\n"}, {RS: "pub fn add(a: i32, b: i32) -> i32 { a * b }\n"},
+  [{'rule': 'test-file-deleted', 'file': 'tests/calc_test.rs'}])
+case('fp-rs-add-test', {RS: RS_SRC}, {RS: RS_SRC.replace("    }\n}\n", "    }\n\n    #[test]\n    fn adds_negative() {\n        assert_eq!(add(-1, -1), -2);\n    }\n}\n")}, [])
+case('fp-rs-table-driven', {RS: RS_SRC}, {RS: "pub fn add(a: i32, b: i32) -> i32 { a + b }\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn adds_cases() {\n        for (a, b, want) in [(2, 3, 5), (0, 0, 0)] {\n            assert_eq!(add(a, b), want);\n        }\n    }\n}\n"},
+  [{'rule': 'test-deleted', 'file': RS, 'test': 'tests::adds_zero', 'severity': 'warn'}])  # tests::adds pairs with adds_cases as a rename
+case('fp-rs-source-only', {RS: RS_SRC}, {RS: RS_SRC.replace("{ a + b }", "{ a + b + 0 }")}, [])
+JT = 'src/test/java/CalcTest.java'; JS_ = 'src/main/java/Calc.java'
+JAVA_SRC = "public class Calc {\n  public static int add(int a, int b) { return a + b; }\n}\n"
+JAVA_TEST = "import org.junit.jupiter.api.Test;\nimport static org.junit.jupiter.api.Assertions.*;\n\nclass CalcTest {\n  @Test\n  void adds() {\n    assertEquals(5, Calc.add(2, 3));\n  }\n\n  @Test\n  void addsZero() {\n    assertEquals(0, Calc.add(0, 0));\n  }\n}\n"
+case('java-test-deleted', {JT: JAVA_TEST, JS_: JAVA_SRC}, {JT: JAVA_TEST.replace("\n  @Test\n  void addsZero() {\n    assertEquals(0, Calc.add(0, 0));\n  }\n", ""), JS_: JAVA_SRC.replace("a + b", "a * b")},
+  [{'rule': 'test-deleted', 'file': JT, 'test': 'CalcTest.addsZero'}])
+case('java-disabled-added', {JT: JAVA_TEST, JS_: JAVA_SRC}, {JT: JAVA_TEST.replace("  @Test\n  void adds() {", "  @Test\n  @Disabled(\"flaky\")\n  void adds() {"), JS_: JAVA_SRC.replace("a + b", "a * b")},
+  [{'rule': 'test-skipped', 'file': JT, 'test': 'CalcTest.adds'}])
+case('java-assert-weakened', {JT: JAVA_TEST, JS_: JAVA_SRC}, {JT: JAVA_TEST.replace("assertEquals(5, Calc.add(2, 3));", "assertTrue(Calc.add(2, 3) > 0);"), JS_: JAVA_SRC.replace("a + b", "a * b")},
+  [{'rule': 'assertion-weakened', 'file': JT, 'test': 'CalcTest.adds'}])
+case('java-assertj-weakened', {JT: JAVA_TEST.replace("assertEquals(5, Calc.add(2, 3));", "assertThat(Calc.add(2, 3)).isEqualTo(5);"), JS_: JAVA_SRC}, {JT: JAVA_TEST.replace("assertEquals(5, Calc.add(2, 3));", "assertThat(Calc.add(2, 3)).isNotNull();"), JS_: JAVA_SRC.replace("a + b", "a * b")},
+  [{'rule': 'assertion-weakened', 'file': JT, 'test': 'CalcTest.adds'}])
+case('java-assumption-added', {JT: JAVA_TEST, JS_: JAVA_SRC}, {JT: JAVA_TEST.replace("  void adds() {\n", "  void adds() {\n    assumeTrue(System.getenv(\"CI\") == null);\n"), JS_: JAVA_SRC.replace("a + b", "a * b")},
+  [{'rule': 'test-conditionally-skipped', 'file': JT, 'test': 'CalcTest.adds'}])
+case('java-delta-huge', {JT: JAVA_TEST, JS_: JAVA_SRC}, {JT: JAVA_TEST.replace("assertEquals(5, Calc.add(2, 3));", "assertEquals(5.0, Calc.add(2, 3), 1000.0);"), JS_: JAVA_SRC.replace("a + b", "a * b")},
+  [{'rule': 'assertion-weakened', 'file': JT, 'test': 'CalcTest.adds'}])
+case('java-mock-changed-class', {JT: JAVA_TEST, JS_: JAVA_SRC}, {JT: JAVA_TEST.replace("  void adds() {\n", "  void adds() {\n    Calc calc = mock(Calc.class);\n"), JS_: JAVA_SRC.replace("a + b", "a * b")},
+  [{'rule': 'mock-on-changed-module', 'file': JT, 'test': 'CalcTest.adds'}])
+case('fp-java-add-test', {JT: JAVA_TEST, JS_: JAVA_SRC}, {JT: JAVA_TEST.replace("  }\n}\n", "  }\n\n  @Test\n  void addsNegative() {\n    assertEquals(-2, Calc.add(-1, -1));\n  }\n}\n"), JS_: JAVA_SRC}, [])
+case('fp-java-parameterized', {JT: JAVA_TEST, JS_: JAVA_SRC}, {JT: "import org.junit.jupiter.params.ParameterizedTest;\nimport org.junit.jupiter.params.provider.CsvSource;\nimport static org.junit.jupiter.api.Assertions.*;\n\nclass CalcTest {\n  @ParameterizedTest\n  @CsvSource({\"2, 3, 5\", \"0, 0, 0\"})\n  void adds(int a, int b, int want) {\n    assertEquals(want, Calc.add(a, b));\n  }\n}\n", JS_: JAVA_SRC},
+  [{'rule': 'test-deleted', 'file': JT, 'test': 'CalcTest.addsZero', 'severity': 'warn'}])
+case('fp-java-assertj-migration', {JT: JAVA_TEST, JS_: JAVA_SRC}, {JT: JAVA_TEST.replace("assertEquals(5, Calc.add(2, 3));", "assertThat(Calc.add(2, 3)).isEqualTo(5);").replace("assertEquals(0, Calc.add(0, 0));", "assertThat(Calc.add(0, 0)).isZero();"), JS_: JAVA_SRC},
+  [{'rule': 'assertion-weakened', 'file': JT, 'test': 'CalcTest.addsZero', 'severity': 'block'}])
+print('fixtures:', len(list(ROOT.iterdir())))
+
+
+# ---------- round 11: Ruby ----------
+RBS = 'lib/calc.rb'; RBT = 'spec/calc_spec.rb'; RBM = 'test/calc_test.rb'
+RB_SRC = "class Calc\n  def self.add(a, b)\n    a + b\n  end\nend\n"
+RB_BROKEN = RB_SRC.replace("a + b", "a * b")
+RB_SPEC = "require 'calc'\n\nRSpec.describe Calc do\n  describe '.add' do\n    it 'adds' do\n      expect(Calc.add(2, 3)).to eq(5)\n    end\n\n    it 'adds zero' do\n      expect(Calc.add(0, 0)).to eq(0)\n    end\n  end\nend\n"
+RB_MINI = "require 'minitest/autorun'\nrequire 'calc'\n\nclass CalcTest < Minitest::Test\n  def test_add\n    assert_equal 5, Calc.add(2, 3)\n  end\n\n  def test_add_zero\n    assert_equal 0, Calc.add(0, 0)\n  end\nend\n"
+case('rb-spec-test-deleted', {RBT: RB_SPEC, RBS: RB_SRC}, {RBT: RB_SPEC.replace("\n    it 'adds zero' do\n      expect(Calc.add(0, 0)).to eq(0)\n    end\n", ""), RBS: RB_BROKEN},
+  [{'rule': 'test-deleted', 'file': RBT, 'test': 'Calc > .add > adds zero'}])
+case('rb-spec-xit', {RBT: RB_SPEC, RBS: RB_SRC}, {RBT: RB_SPEC.replace("    it 'adds' do", "    xit 'adds' do"), RBS: RB_BROKEN},
+  [{'rule': 'test-skipped', 'file': RBT, 'test': 'Calc > .add > adds'}])
+case('rb-spec-skip-call', {RBT: RB_SPEC, RBS: RB_SRC}, {RBT: RB_SPEC.replace("    it 'adds' do\n", "    it 'adds' do\n      skip 'later'\n"), RBS: RB_BROKEN},
+  [{'rule': 'test-skipped', 'file': RBT, 'test': 'Calc > .add > adds'}])
+case('rb-spec-weakened', {RBT: RB_SPEC, RBS: RB_SRC}, {RBT: RB_SPEC.replace("expect(Calc.add(2, 3)).to eq(5)", "expect(Calc.add(2, 3)).to be_truthy"), RBS: RB_BROKEN},
+  [{'rule': 'assertion-weakened', 'file': RBT, 'test': 'Calc > .add > adds'}])
+case('rb-spec-focus', {RBT: RB_SPEC, RBS: RB_SRC}, {RBT: RB_SPEC.replace("    it 'adds zero' do", "    fit 'adds zero' do"), RBS: RB_BROKEN},
+  [{'rule': 'test-focused', 'file': RBT, 'test': 'Calc > .add > adds zero'}])
+case('rb-spec-mock-under-test', {RBT: RB_SPEC, RBS: RB_SRC}, {RBT: RB_SPEC.replace("    it 'adds' do\n", "    it 'adds' do\n      allow(Calc).to receive(:add).and_return(5)\n"), RBS: RB_SRC},
+  [{'rule': 'mock-on-module-under-test', 'file': RBT, 'test': 'Calc > .add > adds'}])
+case('rb-mini-test-deleted', {RBM: RB_MINI, RBS: RB_SRC}, {RBM: RB_MINI.replace("\n  def test_add_zero\n    assert_equal 0, Calc.add(0, 0)\n  end\n", ""), RBS: RB_BROKEN},
+  [{'rule': 'test-deleted', 'file': RBM, 'test': 'CalcTest.test_add_zero'}])
+case('rb-mini-weakened', {RBM: RB_MINI, RBS: RB_SRC}, {RBM: RB_MINI.replace("assert_equal 5, Calc.add(2, 3)", "assert Calc.add(2, 3)"), RBS: RB_BROKEN},
+  [{'rule': 'assertion-weakened', 'file': RBM, 'test': 'CalcTest.test_add'}])
+case('rb-mini-skip', {RBM: RB_MINI, RBS: RB_SRC}, {RBM: RB_MINI.replace("  def test_add\n", "  def test_add\n    skip 'flaky'\n"), RBS: RB_BROKEN},
+  [{'rule': 'test-skipped', 'file': RBM, 'test': 'CalcTest.test_add'}])
+case('rb-mini-stub-changed', {RBM: RB_MINI, RBS: RB_SRC}, {RBM: RB_MINI.replace("    assert_equal 5, Calc.add(2, 3)", "    Calc.stub(:add, 5) do\n      assert_equal 5, Calc.add(2, 3)\n    end"), RBS: RB_BROKEN},
+  [{'rule': 'mock-on-changed-module', 'file': RBM, 'test': 'CalcTest.test_add'}])
+case('fp-rb-spec-add-example', {RBT: RB_SPEC, RBS: RB_SRC}, {RBT: RB_SPEC.replace("  end\nend\n", "\n    it 'adds negatives' do\n      expect(Calc.add(-1, -1)).to eq(-2)\n    end\n  end\nend\n"), RBS: RB_SRC}, [])
+case('fp-rb-spec-table', {RBT: RB_SPEC, RBS: RB_SRC}, {RBT: "require 'calc'\n\nRSpec.describe Calc do\n  describe '.add' do\n    [[2, 3, 5], [0, 0, 0]].each do |a, b, want|\n      it \"adds #{a} and #{b}\" do\n        expect(Calc.add(a, b)).to eq(want)\n      end\n    end\n  end\nend\n", RBS: RB_SRC},
+  [{'rule': 'test-deleted', 'file': RBT, 'test': 'Calc > .add > adds zero', 'severity': 'warn'}])  # 'adds' pairs with the interpolated example as a rename
+case('fp-rb-spec-be-within', {RBT: RB_SPEC, RBS: RB_SRC}, {RBT: RB_SPEC.replace("expect(Calc.add(2, 3)).to eq(5)", "expect(Calc.add(2, 3)).to be_within(0.001).of(5)"), RBS: RB_SRC}, [])
+case('fp-rb-mini-to-spec-style', {RBM: RB_MINI, RBS: RB_SRC}, {RBM: RB_MINI.replace("assert_equal 5, Calc.add(2, 3)", "_(Calc.add(2, 3)).must_equal 5"), RBS: RB_SRC}, [])
+print('fixtures:', len(list(ROOT.iterdir())))

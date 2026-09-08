@@ -11,6 +11,8 @@ export interface SessionState {
   startedAt: string;
   baseTree: string;
   prompt: string | null;
+  /** Every human prompt in the session (capped); overrides are read from here, never from agent-written text. */
+  prompts?: string[];
   blocks: number;
   lastVerdict: string | null;
   /** gatekeep.config.json as it was when the session started; the working-tree copy is not trusted after that. */

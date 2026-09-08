@@ -1,0 +1,10 @@
+{
+  "findings": [
+    {
+      "rule": "assertion-weakened",
+      "file": "src/test/java/CalcTest.java",
+      "test": "CalcTest.addsZero",
+      "severity": "block"
+    }
+  ]
+}

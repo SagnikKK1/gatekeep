@@ -3,6 +3,13 @@ import { langFor, matchesAny, pythonTargetHits, jsTargetHits, jsCandidatePaths, 
 import { tokens, ParseTimeout } from './parser.js';
 import { extractPython } from './extract/python.js';
 import { extractJS } from './extract/js.js';
+import { extractGo } from './extract/go.js';
+import { extractRust, hasInlineTests } from './extract/rust.js';
+import { extractJava } from './extract/java.js';
+import { extractRuby } from './extract/ruby.js';
+import { integrityFindings, INTEGRITY_GLOBS, INTEGRITY_SEVERITIES } from './integrity.js';
+import { CLAIM_SEVERITIES } from './claims.js';
+import { scopeFindings, SCOPE_SEVERITIES, SCOPE_GLOBS, LOCKFILE_GLOBS, DEFAULT_PROTECTED_GLOBS } from './scope.js';
 
 export interface RuleConfig {
   testGlobs: string[];
@@ -11,12 +18,18 @@ export interface RuleConfig {
   severities: Record<string, Severity>;
   /** Fraction of assertions that may be dropped from an existing test before it is reported (0 = any drop). */
   assertionDropTolerance: number;
+  /** Paths an agent may not edit without an override. */
+  protectedGlobs: string[];
 }
 
 export const DEFAULT_SEVERITIES: Record<string, Severity> = {
   'gate-config-changed': 'block',
   'config-invalid': 'warn',
   'session-state-missing': 'warn',
+  'original-tests-fail': 'block',
+  'tests-failing': 'warn',
+  'test-run-timeout': 'warn',
+  'test-run-error': 'warn',
   'test-config-narrowed': 'block',
   'mock-on-source-module': 'block',
   'test-file-deleted': 'block',
@@ -47,6 +60,10 @@ export const DEFAULT_SEVERITIES: Record<string, Severity> = {
   'tolerance-loosened': 'warn',
   'timeout-increased': 'off',
   'test-config-changed': 'warn',
+  ...INTEGRITY_SEVERITIES,
+  ...CLAIM_SEVERITIES,
+  ...SCOPE_SEVERITIES,
+  'gitignore-hides-tests': 'block',
 };
 
 export const DEFAULT_RULE_CONFIG: RuleConfig = {
@@ -55,6 +72,7 @@ export const DEFAULT_RULE_CONFIG: RuleConfig = {
   ignoreGlobs: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.venv/**', '**/venv/**', '**/vendor/**', '**/__pycache__/**', '**/.gatekeep/**'],
   severities: DEFAULT_SEVERITIES,
   assertionDropTolerance: 0,
+  protectedGlobs: DEFAULT_PROTECTED_GLOBS,
 };
 
 /** Files the agent must not touch: the gate's own configuration and the hook wiring. */
@@ -68,14 +86,18 @@ export function isProtectedFile(p: string): boolean {
 }
 /** Which changed paths the rules need the contents of. */
 export function needsContent(p: string, cfg: RuleConfig): boolean {
-  if (matchesAny(p, cfg.ignoreGlobs)) return false;
-  return isTestFile(p, cfg) || matchesAny(p, cfg.testConfigGlobs) || isProtectedFile(p) || langFor(p) !== null;
+  if (matchesAny(p, cfg.ignoreGlobs) || matchesAny(p, LOCKFILE_GLOBS)) return false;
+  return isTestFile(p, cfg) || matchesAny(p, cfg.testConfigGlobs) || isProtectedFile(p) || langFor(p) !== null || matchesAny(p, INTEGRITY_GLOBS) || matchesAny(p, SCOPE_GLOBS) || /(^|\/)\.gitignore$/.test(p);
 }
 
 export async function modelFor(p: string, source: string): Promise<TestFileModel | null> {
   const lang = langFor(p);
   if (lang === 'python') return extractPython(p, source);
   if (lang === 'javascript' || lang === 'typescript' || lang === 'tsx') return extractJS(p, source, lang);
+  if (lang === 'go') return extractGo(p, source);
+  if (lang === 'rust') return extractRust(p, source);
+  if (lang === 'java') return extractJava(p, source);
+  if (lang === 'ruby') return extractRuby(p, source);
   return null;
 }
 
@@ -90,6 +112,8 @@ export interface AnalyzeOptions {
   exists?: (p: string) => boolean;
   /** True inside an agent session: protected-file edits are tampering. False for a human-driven `run` where config edits are legitimate. */
   sessionMode?: boolean;
+  /** The task statement, for the out-of-scope check. */
+  task?: string | null;
 }
 
 interface Examined { c: FileChange; before: TestFileModel | null; after: TestFileModel | null }
@@ -144,8 +168,10 @@ export async function analyze(changes: FileChange[], cfg: RuleConfig = DEFAULT_R
   // 2. Build models for every test file touched
   const files: Examined[] = [];
   for (const c of visible) {
-    const wasTest = c.oldPath ? isTestFile(c.oldPath, cfg) : isTestFile(c.path, cfg);
-    const isTest = isTestFile(c.path, cfg);
+    // Rust keeps unit tests inside source files: a .rs file with #[test] is a test file as well as a source file
+    const inlineRust = langFor(c.path) === 'rust' && (hasInlineTests(c.before ?? '') || hasInlineTests(c.after ?? ''));
+    const wasTest = (c.oldPath ? isTestFile(c.oldPath, cfg) : isTestFile(c.path, cfg)) || inlineRust;
+    const isTest = isTestFile(c.path, cfg) || inlineRust;
     if (!isTest && !wasTest) continue;
     if (c.unreadable) {
       emit({ rule: 'test-file-unreadable', file: c.path, message: `Test file could not be analyzed (${c.unreadable === 'after' ? 'current version' : c.unreadable === 'before' ? 'previous version' : 'both versions'} too large or binary); treat as tampered until it is readable` });
@@ -157,7 +183,7 @@ export async function analyze(changes: FileChange[], cfg: RuleConfig = DEFAULT_R
       continue;
     }
     const lang = langFor(c.oldPath ?? c.path);
-    if (lang === null || lang === 'go') {
+    if (lang === null) {
       if (c.status === 'D' && wasTest) {
         const n = countTestsQuick(c.before ?? '');
         emit({ rule: n > 0 ? 'test-file-deleted' : 'test-support-file-deleted', file: c.path, message: n > 0 ? `Test file deleted (${n} tests)` : 'File under a test directory deleted (no tests inside)' });
@@ -230,7 +256,7 @@ export async function analyze(changes: FileChange[], cfg: RuleConfig = DEFAULT_R
     }
 
     const beforeByName = new Map((before?.tests ?? []).map((t) => [t.name, t] as const));
-    const newDataDriven = after.tests.filter((t) => t.parametrized && !beforeByName.has(t.name) && t.assertions.some((a) => a.strength === 'strong' && a.reachable));
+    const newDataDriven = after.tests.filter((t) => t.parametrized && (!beforeByName.has(t.name) || !beforeByName.get(t.name)!.parametrized) && t.assertions.some((a) => a.strength === 'strong' && a.reachable));
 
     for (const t of before?.tests ?? []) {
       if (beforeByName.has(t.name) && after.tests.some((x) => x.name === t.name)) continue;
@@ -256,6 +282,7 @@ export async function analyze(changes: FileChange[], cfg: RuleConfig = DEFAULT_R
         continue;
       }
       // Existing (or renamed) test: compare against its previous version
+      const countsReliable = (before?.parseErrors ?? 0) === 0 && after.parseErrors === 0;
       if (at.skip && !bt.skip) {
         if (at.skip.conditional) emit({ rule: 'test-conditionally-skipped', file: path, line: at.skip.line, test: at.name, message: `Existing test "${at.name}" now skips under a condition: ${at.skip.marker}` });
         else emit({ rule: 'test-skipped', file: path, line: at.skip.line, test: at.name, message: `Existing test "${at.name}" marked skipped: ${at.skip.marker}` });
@@ -265,6 +292,7 @@ export async function analyze(changes: FileChange[], cfg: RuleConfig = DEFAULT_R
       const deadNow = at.assertions.filter((a) => !a.reachable && bt.assertions.some((b) => b.reachable && b.text === a.text));
       if (deadNow.length > 0) emit({ rule: 'assertion-unreachable', file: path, line: deadNow[0]!.line, test: at.name, message: `${deadNow.length} assertion(s) in "${at.name}" can no longer execute (dead branch, after an unconditional exit, or in a function that is never called)`, after: deadNow.map((a) => a.text).join(' | ') });
       const nb = reachableCount(bt), na = reachableCount(at);
+      if (!countsReliable) continue; // syntax errors make assertion counts meaningless; test-file-unparseable already warned
       if (nb > 0 && na === 0) emit({ rule: 'assertions-removed', file: path, line: at.line, test: at.name, message: `All ${nb} assertion(s) removed from "${at.name}"`, before: summarize(bt), after: summarize(at) });
       else if (na < nb && (nb - na) / nb > cfg.assertionDropTolerance) emit({ rule: 'assertions-reduced', file: path, line: at.line, test: at.name, message: `Assertions in "${at.name}" reduced from ${nb} to ${na}`, before: summarize(bt), after: summarize(at) });
       // Per-assertion weakening: a specific check that disappeared while a weak check on the same subject appeared.
@@ -289,6 +317,15 @@ export async function analyze(changes: FileChange[], cfg: RuleConfig = DEFAULT_R
       if (at.timeout && bt.timeout && at.timeout.ms > bt.timeout.ms) emit({ rule: 'timeout-increased', file: path, line: at.timeout.line, test: at.name, message: `Timeout increased from ${bt.timeout.ms} to ${at.timeout.ms} ms` });
     }
   }
+  findings.push(...integrityFindings(visible, cfg.severities, (p) => isTestFile(p, cfg)));
+  findings.push(...scopeFindings(visible, cfg.severities, { protectedGlobs: cfg.protectedGlobs ?? DEFAULT_PROTECTED_GLOBS, task: opts.task, isTest: (p) => isTestFile(p, cfg) }));
+  // .gitignore patterns that would hide test files from the snapshot (git add -A honors them)
+  for (const c of visible) {
+    if (!/(^|\/)\.gitignore$/.test(c.path) || c.after === undefined) continue;
+    const before = new Set((c.before ?? '').split('\n').map((l) => l.trim()));
+    const hiding = c.after.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#') && !before.has(l) && /(^|\/)(tests?|__tests__|spec|specs)\/?(\*\*)?$|test_\*|_test\.|\.(test|spec)\.|\*\.py$|\*\.(ts|js)$|^\*$/.test(l));
+    if (hiding.length > 0 && sev('gitignore-hides-tests') !== 'off') findings.push({ rule: 'gitignore-hides-tests', severity: sev('gitignore-hides-tests'), file: c.path, message: `.gitignore now hides test paths from the snapshot: ${hiding.slice(0, 3).join(', ')}` });
+  }
   return { findings, examined, changedSourceFiles: changedSource };
 
   function mockFinding(m: Mock, testPath: string, testName: string | undefined, fromConftest = false): void {
@@ -298,13 +335,18 @@ export async function analyze(changes: FileChange[], cfg: RuleConfig = DEFAULT_R
       if (m.literal) { emit({ ...base, rule: 'constant-override-on-changed-module', message: `${m.text} overrides a constant in ${hit}, which was also changed in this session` }); return; }
       const sym = m.wholeModule ? '' : mockedSymbol(m.target);
       const src = sources.get(hit);
-      const related = m.wholeModule || !src || sym === '' || symbolTouched(sym, src.before, src.after, langFor(hit) === 'python');
+      const related = m.wholeModule || !src || sym === '' || symbolTouched(sym, src.before, src.after, langFor(hit) === 'python' || langFor(hit) === 'ruby');
       if (related) emit({ ...base, rule: 'mock-on-changed-module', message: `New mock ${m.text} targets ${hit}, which was also changed in this session${sym ? ` (the change touches "${sym}")` : ''}` });
       else emit({ ...base, rule: 'mock-unrelated-to-change', message: `New mock ${m.text} targets ${hit}, which was changed in this session, but the change does not touch "${sym}"` });
       return;
     }
     // Mocking the module this file is testing, without editing it: the honest path is to fix the code; stubbing it is the tell.
-    const cands = langFor(testPath) === 'python' ? pythonCandidatePaths(m.target) : jsCandidatePaths(m.target, testPath);
+    if (langFor(testPath) === 'go') {
+      // an unqualified target in a _test.go file is a symbol of the package under test
+      if (!m.target.includes('.')) emit({ ...base, rule: 'mock-on-module-under-test', message: `New patch ${m.text} replaces ${m.target} from the package this file tests` });
+      return;
+    }
+    const cands = langFor(testPath) === 'python' ? pythonCandidatePaths(m.target) : langFor(testPath) === 'ruby' ? rubyCandidatePaths(m.target) : langFor(testPath) === 'java' ? javaCandidatePaths(m.target, changes) : jsCandidatePaths(m.target, testPath);
     const existing = cands.find((p) => exists(p));
     if (!existing || isTestFile(existing, cfg)) return;
     if (fromConftest) emit({ ...base, rule: 'mock-on-source-module', message: `New mock ${m.text} in ${testPath} replaces first-party module ${existing} for every test` });
@@ -314,7 +356,7 @@ export async function analyze(changes: FileChange[], cfg: RuleConfig = DEFAULT_R
 
 /** Share of the removed test's distinctive tokens (literals, else identifiers) that appear in the new test's body or data table. */
 function literalContainment(removed: TestCase, into: TestCase): number {
-  const hay = new Set(tokens(into.body + '\n' + into.data));
+  const hay = new Set(tokens(into.body + '\n' + into.data + '\n' + into.data.replace(/["'`]/g, ' ')));
   const all = tokens(removed.body);
   const noise = new Set(['assert', 'self', 'expect', 'it', 'test', 'true', 'false', 'True', 'False', 'None', 'null', 'undefined', 'const', 'let', 'var', 'return', 'await', 'async', 'def', 'in', 'for', 'is', 'not', 'and', 'or', 'toBe', 'toEqual', 'assertEqual']);
   let lits = all.filter((x) => /^(\d|["'`])/.test(x));
@@ -399,6 +441,16 @@ function summarize(t: TestCase): string {
 
 function hitsChanged(target: string, testFile: string, changed: string[]): string | null {
   const lang = langFor(testFile);
+  if (lang === 'java') {
+    const cls = target.replace(/#.*$/, '').split('.').pop() ?? '';
+    return changed.find((f) => f.endsWith('.java') && (f.split('/').pop() ?? '') === `${cls}.java`) ?? null;
+  }
+  if (lang === 'ruby') {
+    // Calc / Billing::Invoice -> calc.rb / billing/invoice.rb
+    const cls = target.replace(/#.*$/, '').replace(/^"|"$/g, '');
+    const snake = cls.split('::').map((seg) => seg.replace(/([a-z\d])([A-Z])/g, '$1_$2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2').toLowerCase()).join('/');
+    return changed.find((f) => f.endsWith('.rb') && (f === `${snake}.rb` || f.endsWith(`/${snake}.rb`) || (f.split('/').pop() ?? '') === `${snake.split('/').pop()}.rb`)) ?? null;
+  }
   for (const f of changed) {
     if (lang === 'python' && langFor(f) === 'python' && pythonTargetHits(target, f)) return f;
     if (lang !== 'python' && langFor(f) !== 'python' && jsTargetHits(target, testFile, f)) return f;
@@ -408,10 +460,24 @@ function hitsChanged(target: string, testFile: string, changed: string[]): strin
 
 function escapeRe(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
+/** Ruby constant -> file candidates: Calc -> lib/calc.rb, app/models/calc.rb ...; Billing::Invoice -> lib/billing/invoice.rb */
+function rubyCandidatePaths(target: string): string[] {
+  const cls = target.replace(/#.*$/, '').replace(/^"|"$/g, '');
+  if (!/^[A-Z]/.test(cls)) return [];
+  const snake = cls.split('::').map((seg) => seg.replace(/([a-z\d])([A-Z])/g, '$1_$2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2').toLowerCase()).join('/');
+  return [`lib/${snake}.rb`, `${snake}.rb`, `app/models/${snake}.rb`, `app/services/${snake}.rb`, `app/lib/${snake}.rb`, `app/controllers/${snake}.rb`, `app/jobs/${snake}.rb`, `src/${snake}.rb`];
+}
+/** Java class -> the changed or existing file named after it (any package). */
+function javaCandidatePaths(target: string, changes: FileChange[]): string[] {
+  const cls = target.replace(/#.*$/, '').split('.').pop() ?? '';
+  return changes.map((c) => c.path).filter((f) => (f.split('/').pop() ?? '') === `${cls}.java`);
+}
+
 /** tests/test_auth.py tests app/auth.py; auth.test.ts tests src/auth.ts. */
 function isModuleUnderTest(sourcePath: string, testPath: string): boolean {
-  const base = (p: string) => (p.split('/').pop() ?? '').replace(/\.(py|js|jsx|ts|tsx|mjs|cjs|mts|cts)$/, '');
-  const t = base(testPath).replace(/^test_/, '').replace(/_test$/, '').replace(/\.(test|spec)$/, '').toLowerCase();
+  const base = (p: string) => (p.split('/').pop() ?? '').replace(/\.(py|pyi|js|jsx|ts|tsx|mjs|cjs|mts|cts|go|rs|java|kt|rb)$/, '');
+  const t = base(testPath).replace(/^test_/, '').replace(/_test$/, '').replace(/_spec$/, '').replace(/\.(test|spec)$/, '').replace(/(Test|Tests|IT)$/, '').replace(/^Test(?=[A-Z])/, '').toLowerCase();
+  if (sourcePath.endsWith('.go') && testPath.endsWith('_test.go')) return sourcePath.replace(/\/[^/]+$/, '') === testPath.replace(/\/[^/]+$/, '') && base(sourcePath).toLowerCase() === t;
   const s = base(sourcePath).toLowerCase();
   return t !== '' && (t === s || (s === 'index' && (sourcePath.split('/').slice(-2, -1)[0] ?? '').toLowerCase() === t));
 }
@@ -419,7 +485,7 @@ function isModuleUnderTest(sourcePath: string, testPath: string): boolean {
 /** Source text of `sym`'s definition (function/class/const) or '' when not found. Indentation-based for Python, brace-based for JS. */
 function definitionOf(src: string, sym: string, isPython: boolean): string {
   const lines = src.split('\n');
-  const re = new RegExp(`^(\\s*)(?:export\\s+(?:default\\s+)?)?(?:async\\s+)?(?:def|function\\*?|class|const|let|var)\\s+${escapeRe(sym)}\\b|^(\\s*)${escapeRe(sym)}\\s*[:=]\\s*(?:async\\s*)?(?:\\(|function|\\w)`);
+  const re = new RegExp(`^(\\s*)(?:export\\s+(?:default\\s+)?)?(?:async\\s+)?(?:def|function\\*?|class|const|let|var|func|fn|pub\\s+fn|pub(?:\\(crate\\))?\\s+fn)\\s+(?:self\\.)?${escapeRe(sym)}\\b|^(\\s*)${escapeRe(sym)}\\s*[:=]\\s*(?:async\\s*)?(?:\\(|function|\\w)`);
   const start = lines.findIndex((l) => re.test(l));
   if (start < 0) return '';
   const indent = (lines[start]!.match(/^\s*/)?.[0].length) ?? 0;
@@ -456,7 +522,7 @@ function symbolTouched(sym: string, before: string, after: string, isPython: boo
 }
 
 function countTestsQuick(src: string): number {
-  return (src.match(/^\s*(async\s+)?def\s+test|^\s*(it|test)\s*\(|^\s*(it|test)\.\w+\s*\(/gm) ?? []).length;
+  return (src.match(/^\s*(async\s+)?def\s+test|^\s*(it|test)\s*\(|^\s*(it|test)\.\w+\s*\(|^\s*func\s+Test[A-Z_]|#\[\s*(\w+::)*test\b|@(\w+\.)*(Test|ParameterizedTest|RepeatedTest)\b|^\s*(it|specify)\s+['"]|^\s*def\s+test_/gm) ?? []).length;
 }
 
 /** Lines present in only one of the two versions (order-insensitive). */

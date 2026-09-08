@@ -46,7 +46,7 @@ export async function installClaudeCode(target: InstallTarget['kind'], cwd: stri
   const wanted: Record<string, { command: string; timeout: number }> = {
     SessionStart: { command: `${prefix} hook session-start --harness claude-code`, timeout: 120 },
     UserPromptSubmit: { command: `${prefix} hook prompt --harness claude-code`, timeout: 10 },
-    Stop: { command: `${prefix} hook stop --harness claude-code`, timeout: 300 },
+    Stop: { command: `${prefix} hook stop --harness claude-code`, timeout: 600 },
   };
   const added: string[] = [], updated: string[] = [];
   for (const [event, h] of Object.entries(wanted)) {

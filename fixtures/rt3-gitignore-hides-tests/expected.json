@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "gitignore-hides-tests",
+      "file": ".gitignore"
+    }
+  ]
+}

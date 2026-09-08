@@ -10,11 +10,16 @@ import { repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees
 import { loadSession, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, type SessionState } from './session.js';
 import { decide, writeVerdict, formatReport, type Verdict } from './verdict.js';
 import { installClaudeCode, uninstallClaudeCode, installCodex, installedHooks } from './install.js';
+import { runOriginalTests, testRunFindings, type TestRunResult } from './testrun.js';
+import { readTranscript, claimFindings } from './claims.js';
+import { applyOverrides, overridesFromPrompts, overridesFromCli, overridesFromCommits, type Override } from './override.js';
+import { isTestFile } from './rules.js';
 import type { Finding } from './model.js';
 
 const require = createRequire(import.meta.url);
 const VERSION: string = (require('../../package.json') as { version: string }).version;
 const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet']);
+const VALUE_FLAGS = ['session', 'base', 'allow', 'harness', 'id', 'task', 'transcript'];
 
 interface Args { _: string[]; flags: Record<string, string | boolean> }
 function parseArgs(argv: string[]): Args {
@@ -44,14 +49,20 @@ function usage(): string {
   return `gatekeep ${VERSION} — independent verification gate for AI coding agents
 
 Usage:
-  gatekeep run [--base <ref>] [--session <id>] [--json] [--fail-on-warn]
+  gatekeep run [--base <ref>] [--session <id>] [--json] [--fail-on-warn] [--allow <rule,...>]
       Check the working tree against a baseline (default: HEAD, or the session's start snapshot).
-      Exit 0 = pass, 1 = blocked, 3 = error.
+      Exit 0 = pass, 1 = blocked, 3 = error. --allow lifts rules for this run (recorded in the verdict);
+      commit trailers "gatekeep: allow <rule> -- reason" between --base and HEAD do the same.
   gatekeep hook session-start|prompt|stop [--harness claude-code|codex]
       Entry points wired into the agent's hooks. Reads the hook JSON on stdin.
   gatekeep install [--shared | --global] [--codex]
       Wire the hooks. Default: .claude/settings.local.json (machine-local, not committed).
       --shared writes .claude/settings.json and expects \`gatekeep\` on PATH (npm link / npm i -g).
+  gatekeep session start [--id <id>] [--task "<task statement>"] [--json]
+      Snapshot the working tree as a baseline for any agent framework (prints the session id).
+  gatekeep verify --session <id> [--transcript <path>] [--allow <rule,...>] [--json] [--fail-on-warn]
+      Evaluate the working tree against that baseline: the last step any harness calls before "done".
+      Exit 0 = pass, 1 = blocked, 3 = error.
   gatekeep uninstall [--shared | --global]
   gatekeep status
       Show where hooks are wired, the state directory, recent sessions and the last verdict.
@@ -80,11 +91,14 @@ async function configFor(root: string, baseTree: string | null, session: Session
   return { cfg, findings };
 }
 
-async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sessionMode: boolean): Promise<{ cur: string; result: AnalysisResult }> {
+async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sessionMode: boolean, transcriptPath?: string, task?: string | null): Promise<{ cur: string; result: AnalysisResult; originalTests: TestRunResult | null }> {
   const cur = await snapshotWorkingTree(root);
   const changes = await diffTrees(root, base, cur, { shouldLoad: (p) => needsContent(p, cfg.rules), maxBytes: 2 * 1024 * 1024 });
-  const result = await analyze(changes, cfg.rules, { exists: (p) => existsSync(path.join(root, p)), sessionMode });
-  return { cur, result };
+  const result = await analyze(changes, cfg.rules, { exists: (p) => existsSync(path.join(root, p)), sessionMode, task });
+  const originalTests = base === cur ? null : await runOriginalTests(root, base, cur, changes, cfg.rules, { testCommand: cfg.testCommand, testTimeoutMs: cfg.testTimeoutMs });
+  result.findings.push(...testRunFindings(originalTests, cfg.rules.severities));
+  if (transcriptPath) result.findings.push(...claimFindings(await readTranscript(transcriptPath), changes, cfg.rules.severities, (p) => isTestFile(p, cfg.rules)));
+  return { cur, result, originalTests };
 }
 
 /** Protected files hashed straight from disk, so gitignored ones (the default settings.local.json) are covered too. */
@@ -96,20 +110,21 @@ async function protectedHashes(root: string): Promise<Record<string, string | nu
   return out;
 }
 
-function buildVerdict(p: { sessionId: string | null; harness: string | null; base: string; cur: string; task: string | null; findings: Finding[]; result: AnalysisResult; strict: boolean; blockCount: number; t0: number }): Verdict {
+function buildVerdict(p: { sessionId: string | null; harness: string | null; base: string; cur: string; task: string | null; findings: Finding[]; result: AnalysisResult; originalTests?: TestRunResult | null; strict: boolean; blockCount: number; t0: number; overrides?: Override[] }): Verdict {
+  const used = applyOverrides(p.findings, p.overrides ?? []);
   const decision = decide(p.findings, p.strict);
   return {
     schema: 'gatekeep.verdict.v1', createdAt: new Date().toISOString(), sessionId: p.sessionId, harness: p.harness,
     baseTree: p.base, currentTree: p.cur, task: p.task, decision,
-    checks: { testIntegrity: { status: decision === 'block' ? 'fail' : decision === 'warn' ? 'warn' : 'pass', findings: p.findings, examined: p.result.examined, changedSourceFiles: p.result.changedSourceFiles } },
-    blockCount: p.blockCount, durationMs: Date.now() - p.t0,
+    checks: { testIntegrity: { status: decision === 'block' ? 'fail' : decision === 'warn' ? 'warn' : 'pass', findings: p.findings, examined: p.result.examined, changedSourceFiles: p.result.changedSourceFiles }, ...(p.originalTests ? { originalTests: p.originalTests } : {}) },
+    blockCount: p.blockCount, durationMs: Date.now() - p.t0, ...(used.length ? { overrides: used } : {}),
   };
 }
 
 async function cmdRun(args: Args, cwd: string): Promise<number> {
   const root = await repoRoot(cwd);
   if (!root) throw new UserError('not inside a git repository');
-  for (const k of ['session', 'base']) if (args.flags[k] === true) throw new UserError(`--${k} requires a value`);
+  for (const k of VALUE_FLAGS) if (args.flags[k] === true) throw new UserError(`--${k} requires a value`);
   const sessionId = typeof args.flags.session === 'string' ? args.flags.session : null;
   const gd = await gitDir(root).catch(() => null);
   const session = sessionId ? await loadSession(root, sessionId, gd) : null;
@@ -121,9 +136,50 @@ async function cmdRun(args: Args, cwd: string): Promise<number> {
   } else base = session?.baseTree ?? await headTree(root);
   const t0 = Date.now();
   const { cfg, findings: cfgFindings } = await configFor(root, baseForConfig, session);
-  const { cur, result } = await runAnalysis(root, base, cfg, session !== null);
+  const { cur, result, originalTests } = await runAnalysis(root, base, cfg, session !== null, undefined, session?.prompt ?? null);
   const strict = cfg.strict || args.flags['fail-on-warn'] === true;
-  const v = buildVerdict({ sessionId, harness: session?.harness ?? null, base, cur, task: session?.prompt ?? null, findings: [...cfgFindings, ...result.findings], result, strict, blockCount: session?.blocks ?? 0, t0 });
+  const overrides: Override[] = [
+    ...overridesFromCli(typeof args.flags.allow === 'string' ? args.flags.allow : undefined, process.env.USER ?? 'cli'),
+    ...overridesFromCli(process.env.GATEKEEP_ALLOW, 'env').map((o) => ({ ...o, source: 'env' as const })),
+    ...(typeof args.flags.base === 'string' ? await overridesFromCommits(root, args.flags.base) : []),
+    ...overridesFromPrompts(session?.prompts ?? (session?.prompt ? [session.prompt] : [])),
+  ];
+  const v = buildVerdict({ sessionId, harness: session?.harness ?? null, base, cur, task: session?.prompt ?? null, findings: [...cfgFindings, ...result.findings], result, originalTests, strict, blockCount: session?.blocks ?? 0, t0, overrides });
+  const vp = await writeVerdict(root, v);
+  if (args.flags.json) console.log(JSON.stringify(v, null, 2));
+  else console.log(formatReport(v, { forAgent: false, verdictPath: vp }));
+  return v.decision === 'block' ? 1 : 0;
+}
+
+/** Framework-agnostic adapter: `session start` then `verify`, no hook system required. */
+async function cmdSession(args: Args, cwd: string): Promise<number> {
+  if (args._[1] !== 'start') throw new UserError('usage: gatekeep session start [--id <id>] [--task "<task>"]');
+  const root = await repoRoot(cwd);
+  if (!root) throw new UserError('not inside a git repository');
+  for (const k of VALUE_FLAGS) if (args.flags[k] === true) throw new UserError(`--${k} requires a value`);
+  const id = typeof args.flags.id === 'string' ? args.flags.id : `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const gd = await gitDir(root).catch(() => null);
+  const s = await newSession(root, id, typeof args.flags.harness === 'string' ? args.flags.harness : 'generic', await snapshotWorkingTree(root), await readConfigText(root), gd, await protectedHashes(root));
+  if (typeof args.flags.task === 'string') { s.prompt = args.flags.task.slice(0, 4000); s.prompts = [s.prompt]; await saveSession(root, s, gd); }
+  if (args.flags.json) console.log(JSON.stringify({ session: id, baseTree: s.baseTree, startedAt: s.startedAt }));
+  else console.log(id);
+  return 0;
+}
+
+async function cmdVerify(args: Args, cwd: string): Promise<number> {
+  const root = await repoRoot(cwd);
+  if (!root) throw new UserError('not inside a git repository');
+  for (const k of VALUE_FLAGS) if (args.flags[k] === true) throw new UserError(`--${k} requires a value`);
+  if (typeof args.flags.session !== 'string') throw new UserError('verify needs --session <id> (from `gatekeep session start`)');
+  const gd = await gitDir(root).catch(() => null);
+  const s = await loadSession(root, args.flags.session, gd);
+  if (!s) throw new UserError(`no session "${args.flags.session}" recorded for this repository`);
+  const t0 = Date.now();
+  const { cfg, findings: cfgFindings } = await configFor(root, null, s);
+  const { cur, result, originalTests } = await runAnalysis(root, s.baseTree, cfg, true, typeof args.flags.transcript === 'string' ? args.flags.transcript : undefined, s.prompt);
+  const overrides: Override[] = [...overridesFromCli(typeof args.flags.allow === 'string' ? args.flags.allow : undefined, process.env.USER ?? 'cli'), ...overridesFromPrompts(s.prompts ?? (s.prompt ? [s.prompt] : []))];
+  const strict = cfg.strict || args.flags['fail-on-warn'] === true;
+  const v = buildVerdict({ sessionId: s.id, harness: s.harness, base: s.baseTree, cur, task: s.prompt, findings: [...cfgFindings, ...result.findings], result, originalTests, strict, blockCount: s.blocks, t0, overrides });
   const vp = await writeVerdict(root, v);
   if (args.flags.json) console.log(JSON.stringify(v, null, 2));
   else console.log(formatReport(v, { forAgent: false, verdictPath: vp }));
@@ -156,7 +212,11 @@ async function cmdHook(args: Args, cwd: string): Promise<number> {
   if (event === 'prompt') {
     await withSessionLock(root, sessionId, async () => {
       const s = await loadSession(root, sessionId, gd) ?? await newSession(root, sessionId, harness, await snapshotWorkingTree(root), await readConfigText(root), gd, await protectedHashes(root));
-      if (!s.prompt && typeof input.prompt === 'string') { s.prompt = input.prompt.slice(0, 4000); await saveSession(root, s, gd); }
+      if (typeof input.prompt === 'string') {
+        if (!s.prompt) s.prompt = input.prompt.slice(0, 4000);
+        s.prompts = [...(s.prompts ?? []), input.prompt.slice(0, 4000)].slice(-50);
+        await saveSession(root, s, gd);
+      }
     });
     return 0;
   }
@@ -178,7 +238,7 @@ async function stopHook(root: string, sessionId: string, harness: string, input:
     }
     const t0 = Date.now();
     const { cfg, findings: cfgFindings } = await configFor(root, null, s);
-    const { cur, result } = await runAnalysis(root, s.baseTree, cfg, true);
+    const { cur, result, originalTests } = await runAnalysis(root, s.baseTree, cfg, true, typeof input.transcript_path === 'string' ? input.transcript_path : undefined, s.prompt);
     // Protected files compared from disk: catches gitignored hook settings the tree diff cannot see.
     if (s.protectedHashes) {
       const now = await protectedHashes(root);
@@ -190,10 +250,11 @@ async function stopHook(root: string, sessionId: string, harness: string, input:
       }
     }
     const findings = [...stateFindings.filter(() => (cfg.rules.severities['session-state-missing'] ?? 'warn') !== 'off').map((f) => ({ ...f, severity: cfg.rules.severities['session-state-missing'] ?? 'warn' })), ...cfgFindings, ...result.findings];
+    applyOverrides(findings, overridesFromPrompts(s.prompts ?? (s.prompt ? [s.prompt] : [])));
     const decision = decide(findings, cfg.strict);
     void input;
     const overLimit = decision === 'block' && s.blocks >= cfg.maxBlocks;
-    const v = buildVerdict({ sessionId, harness, base: s.baseTree, cur, task: s.prompt, findings, result, strict: cfg.strict, blockCount: s.blocks + (decision === 'block' && !overLimit ? 1 : 0), t0 });
+    const v = buildVerdict({ sessionId, harness, base: s.baseTree, cur, task: s.prompt, findings, result, originalTests, strict: cfg.strict, blockCount: s.blocks + (decision === 'block' && !overLimit ? 1 : 0), t0, overrides: overridesFromPrompts(s.prompts ?? (s.prompt ? [s.prompt] : [])) });
     const vp = await writeVerdict(root, v);
     s.lastVerdict = vp;
     if (decision === 'block' && !overLimit) {
@@ -269,6 +330,8 @@ async function main(): Promise<number> {
   if (args.flags.help) { console.log(usage()); return 0; }
   switch (args._[0]) {
     case 'run': return cmdRun(args, cwd);
+    case 'session': return cmdSession(args, cwd);
+    case 'verify': return cmdVerify(args, cwd);
     case 'hook': return cmdHook(args, cwd);
     case 'install': return cmdInstall(args, cwd);
     case 'uninstall': return cmdUninstall(args, cwd);
