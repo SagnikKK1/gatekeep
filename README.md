@@ -2,11 +2,7 @@
 
 An independent verification gate for AI coding agents. It runs when the agent tries to say "done" and blocks it when the work was faked instead of finished: tests tampered with, checks weakened, claims that nothing in the session backs up.
 
-Agents under pressure to get a green run delete tests, skip them, weaken `==` into truthiness, return before the assertions, or mock away the module they just changed. ImpossibleBench measured frontier models doing this in up to 76% of runs where the spec and the tests conflicted. Lock the tests down and they go after whatever else grades them: a `@ts-ignore`, `continue-on-error` in CI, a strict flag turned off. gatekeep catches all of it deterministically from the diff, with no model call, and reads the agent's own summary only to check it for contradictions.
-
-**gatekeep does not replace your test suite.** It is a diff gate: did the tests and checks that existed at the start of the session survive intact.
-
-## Install
+## Quick start
 
 Requires Node 20+ and git.
 
@@ -17,7 +13,35 @@ gatekeep install                        # wires Claude Code hooks into .claude/s
 gatekeep status                         # confirms the hooks and shows the state directory
 ```
 
-`install` also writes `gatekeep.config.json`; commit it. `--shared` writes `.claude/settings.json` for the whole team (everyone needs `gatekeep` on PATH), `--global` writes `~/.claude/settings.json`, and `gatekeep uninstall` removes the hooks. From source: clone, then `npm install && npm run build && npm link`.
+That is the whole setup. Start a Claude Code session as usual. When the agent tries to finish after weakening a test, it sees this instead and has to fix the implementation:
+
+```
+GATEKEEP BLOCKED — test integrity: 2 blocking, 0 warning(s); 1 test file(s) examined, 1 source file(s) changed.
+  [block] test-deleted  tests/test_calc.py:6 [test_add_neg]
+      Test "test_add_neg" removed (had 1 assertion(s))
+  [block] assertion-weakened  tests/test_calc.py:4 [test_add]
+      "test_add": 1 specific assertion(s) replaced by truthiness/existence/broad checks
+      before: assert add(2, 3) == 5
+      after:  assert add(2, 3)
+```
+
+Honest work passes silently. Warnings reach you, not the agent. After three blocks in one session the agent is allowed to finish and the findings are handed to you.
+
+On pull requests, the same check runs from the diff in CI:
+
+```yaml
+- uses: actions/checkout@v4
+  with: { fetch-depth: 0 }
+- uses: SagnikKK1/gatekeep@main
+```
+
+`install` also writes `gatekeep.config.json`; commit it. `--shared` writes `.claude/settings.json` for the whole team (everyone needs `gatekeep` on PATH), `--global` writes `~/.claude/settings.json`, and `gatekeep uninstall` removes the hooks. From source: clone, then `npm install && npm run build && npm link`. Any other agent: `gatekeep session start --task "..."` before the work, `gatekeep verify --session <id>` after.
+
+## Why
+
+Agents under pressure to get a green run delete tests, skip them, weaken `==` into truthiness, return before the assertions, or mock away the module they just changed. ImpossibleBench measured frontier models doing this in up to 76% of runs where the spec and the tests conflicted. Lock the tests down and they go after whatever else grades them: a `@ts-ignore`, `continue-on-error` in CI, a strict flag turned off. gatekeep catches all of it deterministically from the diff, with no model call, and reads the agent's own summary only to check it for contradictions.
+
+**gatekeep does not replace your test suite.** It is a diff gate: did the tests and checks that existed at the start of the session survive intact. Coverage cannot answer that: a skipped test, an `.only`, or `expect(true).toBe(true)` keeps every line executed while the test stops testing.
 
 ## How it works
 
@@ -49,21 +73,14 @@ gatekeep run                    # working tree vs HEAD
 gatekeep run --base main        # working tree vs a branch; the config is read from that base
 gatekeep run --json             # machine-readable verdict on stdout
 gatekeep run --fail-on-warn     # treat warnings as blocking
+gatekeep report --open          # the latest verdict as one HTML file, test bodies before and after next to each finding
 ```
 
 Exit codes: `0` pass, `1` blocked, `3` error. Every run writes a verdict JSON under `~/.gatekeep/`, printed at the end of each report.
 
 A block that is right in general and wrong for one change is lifted for that change only, with an audit trail, by a directive in your prompt or a commit trailer: `gatekeep: allow test-deleted -- CSV exporter removed per ticket 482`. `gate-config-changed` can never be lifted.
 
-**On pull requests**, the same rules run from the diff in CI and post findings as check annotations:
-
-```yaml
-- uses: actions/checkout@v4
-  with: { fetch-depth: 0 }
-- uses: SagnikKK1/gatekeep@main
-```
-
-**Any other agent** uses two commands: `gatekeep session start --task "..."` before the work and `gatekeep verify --session <id>` after it. Codex CLI hooks are wired but untested. Adapters, the override rules, the Action's inputs, and the verdict format: [docs/integrations.md](docs/integrations.md).
+The GitHub Action posts findings as check annotations on the changed lines. Codex CLI hooks are wired but untested. Adapters, the override rules, the Action's inputs, and the verdict format: [docs/integrations.md](docs/integrations.md).
 
 ## Configuration
 
@@ -107,6 +124,6 @@ Fixtures are `before/` and `after/` trees plus `expected.json`, generated by `sc
 
 ## Roadmap
 
-In order: `gatekeep report`, a static HTML render of a verdict with before-and-after test bodies; a wider false-positive replay and a transcript corpus for the claim rules; a published catch rate once a benchmark release preserves the agents' test edits; GitLab CI and a pull-request label as a second override source; native adapters for Cursor, Gemini CLI, OpenCode and Aider; C# and Kotlin; a large-monorepo measurement and Windows CI; then incremental mutation testing on the lines the agent changed, holdout tests generated out of the agent's sight, and a hosted PR check for organizations.
+In order: a wider false-positive replay and a transcript corpus for the claim rules; a published catch rate once a benchmark release preserves the agents' test edits; GitLab CI and a pull-request label as a second override source; native adapters for Cursor, Gemini CLI, OpenCode and Aider; C# and Kotlin; a large-monorepo measurement and Windows CI; then incremental mutation testing on the lines the agent changed, holdout tests generated out of the agent's sight, and a hosted PR check for organizations.
 
 Every new rule family ships with its own false-positive fixtures and a column in the replay table before any of its rules defaults to block. Nothing leaves the machine: the gate writes only to `~/.gatekeep/` and `.git/gatekeep/`, the original-tests run happens in a temporary export, and the model-backed review is off unless you turn it on. Apache-2.0, no telemetry, no paid tier.
