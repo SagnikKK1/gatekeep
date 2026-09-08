@@ -1,0 +1,147 @@
+import path from 'node:path';
+import type { Lang } from './parser.js';
+
+export function langFor(file: string): Lang | null {
+  const ext = path.extname(file).toLowerCase();
+  switch (ext) {
+    case '.py': case '.pyi': return 'python';
+    case '.js': case '.mjs': case '.cjs': case '.jsx': return 'javascript';
+    case '.ts': case '.mts': case '.cts': return 'typescript';
+    case '.tsx': return 'tsx';
+    case '.go': return 'go';
+    default: return null;
+  }
+}
+
+const globCache = new Map<string, RegExp>();
+
+/** Convert a glob (supports **, *, ?, {a,b}) to a RegExp matching whole POSIX paths. */
+export function globToRegExp(glob: string): RegExp {
+  const cached = globCache.get(glob);
+  if (cached) return cached;
+  let re = '';
+  let i = 0;
+  while (i < glob.length) {
+    const c = glob[i]!;
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        if (glob[i + 2] === '/') { re += '(?:.*/)?'; i += 3; } else { re += '.*'; i += 2; }
+      } else { re += '[^/]*'; i++; }
+    } else if (c === '?') { re += '[^/]'; i++; }
+    else if (c === '{') {
+      const end = glob.indexOf('}', i);
+      if (end === -1) { re += '\\{'; i++; continue; }
+      const alts = glob.slice(i + 1, end).split(',').map((a) => a.replace(/[.+^$()|[\]\\]/g, '\\$&'));
+      re += '(?:' + alts.join('|') + ')';
+      i = end + 1;
+    } else { re += c.replace(/[.+^$()|[\]\\]/g, '\\$&'); i++; }
+  }
+  const out = new RegExp('^' + re + '$');
+  globCache.set(glob, out);
+  return out;
+}
+
+export const DEFAULT_TEST_GLOBS = [
+  '**/test_*.py', '**/*_test.py', '**/tests/**/*.py', '**/test/**/*.py',
+  '**/*.test.{js,jsx,ts,tsx,mjs,cjs,mts,cts}', '**/*.spec.{js,jsx,ts,tsx,mjs,cjs,mts,cts}',
+  '**/__tests__/**/*.{js,jsx,ts,tsx,mjs,cjs}', '**/test/**/*.{js,jsx,ts,tsx,mjs,cjs}', '**/tests/**/*.{js,jsx,ts,tsx,mjs,cjs}', '**/spec/**/*.{js,jsx,ts,tsx,mjs,cjs}',
+  '**/*_test.go',
+];
+
+export const DEFAULT_TEST_CONFIG_GLOBS = [
+  '**/pytest.ini', '**/tox.ini', '**/setup.cfg', '**/pyproject.toml', '**/conftest.py',
+  '**/jest.config.{js,cjs,mjs,ts,json}', '**/vitest.config.{js,cjs,mjs,ts,mts}', '**/vitest.workspace.*',
+  '**/.mocharc*', '**/karma.conf.*', '**/playwright.config.*', '**/cypress.config.*',
+  '**/package.json', '**/.nycrc*', '**/.c8rc*', '**/codecov.yml', '**/.coveragerc',
+];
+
+export function matchesAny(file: string, globs: string[]): boolean {
+  const p = file.replace(/\\/g, '/');
+  return globs.some((g) => globToRegExp(g).test(p));
+}
+
+/** Candidate dotted module names for a python source file path. */
+export function pythonModuleCandidates(file: string): string[] {
+  const p = file.replace(/\\/g, '/').replace(/\.pyi?$/, '');
+  const parts = p.split('/').filter(Boolean);
+  if (parts[parts.length - 1] === '__init__') parts.pop();
+  const out: string[] = [];
+  for (let i = 0; i < parts.length; i++) out.push(parts.slice(i).join('.'));
+  return out;
+}
+
+/** Does a python mock target (dotted) refer to something in `file`? */
+export function pythonTargetHits(target: string, file: string): boolean {
+  const t = target.trim();
+  if (!t) return false;
+  const cands = pythonModuleCandidates(file);
+  const prefixes = [t];
+  const idx = t.lastIndexOf('.');
+  if (idx > 0) prefixes.push(t.slice(0, idx));
+  return prefixes.some((pre) => cands.includes(pre));
+}
+
+/** Path stem (no extension, no trailing /index) of a source file. */
+export function stemOf(p: string): string {
+  return p.replace(/\\/g, '/').replace(/\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$/, '').replace(/\/index$/, '');
+}
+
+/** Resolve a JS import specifier relative to the importing file into a repo path stem, or an alias tail, or null for packages. */
+export function jsSpecifierStem(spec: string, fromFile: string): { stem: string; kind: 'relative' | 'alias' } | null {
+  let s = spec.trim().replace(/[?#].*$/, '');
+  if (!s) return null;
+  if (s.startsWith('.')) {
+    return { stem: stemOf(path.posix.normalize(path.posix.join(path.posix.dirname(fromFile.replace(/\\/g, '/')), s))), kind: 'relative' };
+  }
+  if (s.startsWith('/')) return { stem: stemOf(s.slice(1)), kind: 'alias' };
+  const alias = /^(@\/|~\/|#\/|\$\/|src\/|lib\/|app\/|packages\/)/.exec(s);
+  if (alias) return { stem: stemOf(s.replace(/^[@~#$]\//, '')), kind: 'alias' };
+  return null; // bare package specifier ("axios", "@scope/pkg", "node:fs"): never a first-party file
+}
+
+/** Does a JS mock target refer to `file`? Targets: import specifier, `specifier#attr` (spyOn on an imported binding), `ident:`/`global:` (unresolvable). */
+export function jsTargetHits(target: string, testFile: string, file: string): boolean {
+  if (target.startsWith('ident:') || target.startsWith('global:')) return false;
+  const spec = target.includes('#') ? target.slice(0, target.indexOf('#')) : target;
+  const r = jsSpecifierStem(spec, testFile);
+  if (!r) return false;
+  const fileStem = stemOf(file);
+  if (r.kind === 'relative') return r.stem === fileStem;
+  return fileStem === r.stem || fileStem.endsWith('/' + r.stem);
+}
+
+/** Candidate repo paths a JS specifier could resolve to (for existence checks). */
+export function jsCandidatePaths(target: string, testFile: string): string[] {
+  const spec = target.includes('#') ? target.slice(0, target.indexOf('#')) : target;
+  const r = jsSpecifierStem(spec, testFile);
+  if (!r || r.kind !== 'relative') return [];
+  const exts = ['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'mts', 'cts'];
+  return [...exts.map((e) => `${r.stem}.${e}`), ...exts.map((e) => `${r.stem}/index.${e}`)];
+}
+
+/** Candidate repo paths a python dotted target could resolve to. */
+export function pythonCandidatePaths(target: string): string[] {
+  const t = target.trim();
+  const mods = [t];
+  const idx = t.lastIndexOf('.');
+  if (idx > 0) mods.push(t.slice(0, idx));
+  const out: string[] = [];
+  for (const m of mods) { const p = m.replace(/\./g, '/'); out.push(`${p}.py`, `${p}/__init__.py`, `src/${p}.py`, `src/${p}/__init__.py`); }
+  return out;
+}
+
+/** Symbol name a mock replaces: last dotted segment, or the `#attr` part. */
+export function mockedSymbol(target: string): string {
+  if (target.includes('#')) return target.slice(target.indexOf('#') + 1);
+  return target.split('.').pop() ?? '';
+}
+
+/** Would the test runner actually collect this file, by name? (pytest: test_*.py / *_test.py; jest/vitest/mocha: *.test.* / *.spec.* / __tests__/; go: *_test.go) */
+export function isCollectedName(p: string): boolean {
+  const norm = p.replace(/\\/g, '/');
+  const base = norm.split('/').pop() ?? '';
+  if (/\.pyi?$/.test(base)) return /^test_.*\.py$|_test\.py$|^conftest\.py$/.test(base);
+  if (/\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$/.test(base)) return /\.(test|spec)\.[cm]?[jt]sx?$/.test(base) || /(^|\/)__tests__\//.test(norm) || /(^|\/)(test|tests|spec)\//.test(norm) && !/\.d\.ts$/.test(base) && /^(test|spec|.*[._-](test|spec))\./.test(base);
+  if (base.endsWith('.go')) return base.endsWith('_test.go');
+  return true;
+}
