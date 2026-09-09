@@ -153,6 +153,10 @@ export function oracleFindings(changes: FileChange[], severities: Record<string,
   for (const c of changes) {
     if (c.status === 'D' || c.after === undefined) continue;
     if (opts.isTest(c.path) || langFor(c.path) === null) continue;
+    // "Fitted to the tests" describes an implementation that was changed to satisfy them. A file added in this session
+    // has no earlier version that the tests could have pulled out of shape, and a new utility whose literals happen to
+    // appear in some test is the false positive this rule produces on real history.
+    if (c.status === 'A' || c.before === undefined) continue;
     const added = addedLines(c.before, c.after);
     if (added.length === 0) continue;
     const py = langFor(c.path) === 'python' || langFor(c.path) === 'ruby';
