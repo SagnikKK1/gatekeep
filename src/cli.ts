@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { analyze, needsContent, PROTECTED_FILES, type AnalysisResult } from './rules.js';
 import { parseConfig, readConfigText, defaultConfigText, CONFIG_FILENAME, type GatekeepConfig } from './config.js';
-import { repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees, catFile, lsTree, BlobBatch, GitError, type SnapshotProblems } from './git.js';
+import { repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees, catFile, lsTree, isShallow, BlobBatch, GitError, type SnapshotProblems } from './git.js';
 import { langFor } from './lang.js';
 import { loadSession, loadSessionChecked, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, type SessionState } from './session.js';
 import { decide, writeVerdict, formatReport, type Verdict } from './verdict.js';
@@ -195,7 +195,12 @@ async function cmdRun(args: Args, cwd: string): Promise<number> {
   if (sessionId && !session) throw new UserError(`no session "${sessionId}" recorded for this repository (see \`gatekeep status\`)`);
   let base: string, baseForConfig: string | null = null;
   if (typeof args.flags.base === 'string') {
-    try { base = await resolveTree(root, args.flags.base); } catch { throw new UserError(`--base ${args.flags.base}: not a commit, branch or tag in this repository`); }
+    try { base = await resolveTree(root, args.flags.base); }
+    catch {
+      throw new UserError(await isShallow(root)
+        ? `--base ${args.flags.base}: this is a shallow clone, so that commit is not present. Run \`git fetch --unshallow\`, or set \`fetch-depth: 0\` on actions/checkout.`
+        : `--base ${args.flags.base}: not a commit, branch or tag in this repository`);
+    }
     baseForConfig = base;
   } else base = session?.baseTree ?? await headTree(root);
   const t0 = Date.now();

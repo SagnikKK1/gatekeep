@@ -381,6 +381,13 @@ PATH="$NB:/usr/bin:/bin" node "$Q/dist/src/cli.js" install >/dev/null 2>&1
 check "hook command shell-quotes a path containing \$" "grep -q \"'\" .claude/settings.local.json && ! grep -q '\"node \\\\\"' .claude/settings.local.json"
 rm -rf .claude
 
+echo "== shallow clone says what to do about it"
+SH="$E2E/shallow"; git clone -q --depth 1 "file://$R" "$SH" 2>/dev/null
+cd "$SH"; node "$CLI" run --base HEAD~1 >/tmp/gk_out 2>&1; code=$?
+check "shallow clone: names fetch-depth instead of \"not a commit\"" '[ $code -eq 3 ] && grep -q "shallow clone" /tmp/gk_out && grep -q "fetch-depth: 0" /tmp/gk_out'
+cd "$R"; node "$CLI" run --base nope-not-a-ref >/tmp/gk_out 2>&1; code=$?
+check "a real typo in --base still gets the plain message" '[ $code -eq 3 ] && grep -q "not a commit, branch or tag" /tmp/gk_out'
+
 echo "== git edge: sparse checkout with a stray file outside the cone"
 S="$E2E/sparse"; git clone -q --no-checkout "$R" "$S" && cd "$S" && git sparse-checkout set --cone tests >/dev/null 2>&1 && git checkout -q main
 mkdir -p other && echo x > other/scratch.txt

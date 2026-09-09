@@ -38,6 +38,11 @@ export async function headTree(cwd: string): Promise<string> {
   try { return (await git(cwd, ['rev-parse', 'HEAD^{tree}'], NO_INDEX)).trim(); } catch { return EMPTY_TREE; }
 }
 
+/** A shallow clone has most history missing, which is what `--base main` hits in CI when `fetch-depth` was left at 1. */
+export async function isShallow(cwd: string): Promise<boolean> {
+  try { return (await git(cwd, ['rev-parse', '--is-shallow-repository'], NO_INDEX)).trim() === 'true'; } catch { return false; }
+}
+
 export async function resolveTree(cwd: string, ref: string): Promise<string> {
   return (await git(cwd, ['rev-parse', '--verify', '-q', `${ref}^{tree}`], NO_INDEX)).trim();
 }
