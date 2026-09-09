@@ -4,7 +4,7 @@ Part of [gatekeep](../README.md): adapters, the generic protocol, overrides, the
 
 | Harness | Status | How |
 |---|---|---|
-| Claude Code | supported | `gatekeep install` wires SessionStart, UserPromptSubmit and Stop hooks; the transcript is read for claim verification |
+| Claude Code | supported | `gatekeep install` wires SessionStart, UserPromptSubmit and Stop hooks. Both the older and newer field spellings are read (`source`/`how`, `prompt`/`prompt_text`), and the Stop payload's `last_assistant_message` is preferred over the transcript file, which is written asynchronously and can lag the turn that triggered the hook |
 | Codex CLI | wired, untested | `gatekeep install --codex` writes the same three hooks to `~/.codex/hooks.json` |
 | Anything else | supported via the generic protocol | two commands, below |
 

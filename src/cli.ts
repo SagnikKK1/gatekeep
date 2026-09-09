@@ -129,13 +129,16 @@ async function baseTestFiles(root: string, base: string, cfg: GatekeepConfig, ch
   return out;
 }
 
-async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sessionMode: boolean, transcriptPath?: string, task?: string | null): Promise<Analysis> {
+async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sessionMode: boolean, transcriptPath?: string, task?: string | null, finalText?: string): Promise<Analysis> {
   const cur = await snapshotWorkingTree(root);
   const changes = await diffTrees(root, base, cur, { shouldLoad: (p) => needsContent(p, cfg.rules), maxBytes: 2 * 1024 * 1024 });
   const result = await analyze(changes, cfg.rules, { exists: (p) => existsSync(path.join(root, p)), sessionMode, task, baseTestFiles: await baseTestFiles(root, base, cfg, changes) });
   const originalTests = base === cur ? null : await runOriginalTests(root, base, cur, changes, cfg.rules, { testCommand: cfg.testCommand, testTimeoutMs: cfg.testTimeoutMs });
   result.findings.push(...testRunFindings(originalTests, cfg.rules.severities));
-  const transcript = transcriptPath ? await readTranscript(transcriptPath) : null;
+  // The transcript file is written asynchronously and can be missing the turn that triggered this hook, so when the
+  // harness hands us the final message directly, that is the authoritative text for the claim rules.
+  const read = transcriptPath ? await readTranscript(transcriptPath) : null;
+  const transcript = read && finalText !== undefined ? { ...read, finalText } : read;
   if (transcript) result.findings.push(...claimFindings(transcript, changes, cfg.rules.severities, (p) => isTestFile(p, cfg.rules)));
   return { cur, changes, result, originalTests, claim: transcript?.finalText ?? null };
 }
@@ -244,6 +247,9 @@ async function cmdVerify(args: Args, cwd: string): Promise<number> {
   return v.decision === 'block' ? 1 : 0;
 }
 
+/** SessionStart reasons that continue work already under way; anything else is a fresh session and a new baseline. */
+const CONTINUES_SESSION = new Set(['resume', 'compact', 'clear', 'fork']);
+
 async function cmdHook(args: Args, cwd: string): Promise<number> {
   // The judge may run Claude Code headless; that child loads no settings, but if it ever did, its hooks must not re-enter the gate.
   if (process.env.GATEKEEP_JUDGE_CHILD === '1') return 0;
@@ -258,9 +264,11 @@ async function cmdHook(args: Args, cwd: string): Promise<number> {
 
   if (event === 'session-start') {
     const existing = await loadSession(root, sessionId, gd);
-    const source = typeof input.source === 'string' ? input.source : '';
-    // On resume/compact keep the original baseline; on a fresh start take a new one.
-    if (existing && (source === 'resume' || source === 'compact')) { if (existing.recovered) await saveSession(root, existing, gd); }
+    // Claude Code renamed this field to `how`; read both so the gate works on either version.
+    const source = typeof input.how === 'string' ? input.how : typeof input.source === 'string' ? input.source : '';
+    // Only a genuinely fresh start takes a new baseline. Resuming, compacting, clearing the context or forking all
+    // continue work already done, so re-snapshotting there would launder every change made before that point.
+    if (existing && CONTINUES_SESSION.has(source)) { if (existing.recovered) await saveSession(root, existing, gd); }
     else {
       const base = await snapshotWorkingTree(root);
       await newSession(root, sessionId, harness, base, await readConfigText(root), gd, await protectedHashes(root));
@@ -272,9 +280,12 @@ async function cmdHook(args: Args, cwd: string): Promise<number> {
   if (event === 'prompt') {
     await withSessionLock(root, sessionId, async () => {
       const s = await loadSession(root, sessionId, gd) ?? await newSession(root, sessionId, harness, await snapshotWorkingTree(root), await readConfigText(root), gd, await protectedHashes(root));
-      if (typeof input.prompt === 'string') {
-        if (!s.prompt) s.prompt = input.prompt.slice(0, 4000);
-        s.prompts = [...(s.prompts ?? []), input.prompt.slice(0, 4000)].slice(-50);
+      // Claude Code renamed this field to `prompt_text`; read both. Without it there is no task statement, which
+      // silently turns off the scope check and every override the user typed in their own prompt.
+      const prompt = typeof input.prompt_text === 'string' ? input.prompt_text : typeof input.prompt === 'string' ? input.prompt : null;
+      if (prompt !== null) {
+        if (!s.prompt) s.prompt = prompt.slice(0, 4000);
+        s.prompts = [...(s.prompts ?? []), prompt.slice(0, 4000)].slice(-50);
         await saveSession(root, s, gd);
       }
     });
@@ -298,7 +309,7 @@ async function stopHook(root: string, sessionId: string, harness: string, input:
     }
     const t0 = Date.now();
     const { cfg, findings: cfgFindings } = await configFor(root, null, s);
-    const a = await runAnalysis(root, s.baseTree, cfg, true, typeof input.transcript_path === 'string' ? input.transcript_path : undefined, s.prompt);
+    const a = await runAnalysis(root, s.baseTree, cfg, true, typeof input.transcript_path === 'string' ? input.transcript_path : undefined, s.prompt, typeof input.last_assistant_message === 'string' ? input.last_assistant_message : undefined);
     const { cur, result, originalTests } = a;
     // Protected files compared from disk: catches gitignored hook settings the tree diff cannot see.
     if (s.protectedHashes) {

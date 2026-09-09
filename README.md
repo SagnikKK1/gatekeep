@@ -45,7 +45,7 @@ Agents under pressure to get a green run delete tests, skip them, weaken `==` in
 
 ## How it works
 
-- `SessionStart` snapshots the working tree as a git tree object and captures the gate's own config.
+- `SessionStart` snapshots the working tree as a git tree object and captures the gate's own config. Resuming, compacting, clearing or forking a session keeps the original snapshot, so work done before that point is still in the diff.
 - `UserPromptSubmit` records the first prompt as the task statement.
 - `Stop` diffs the working tree against the snapshot, parses every changed test file with tree-sitter, runs every rule family over the diff, and exits 2 with the report when it finds blocking tampering. Claude Code feeds that report back to the agent as its next instruction. After `maxBlocks` blocks (default 3) it lets the agent finish and hands the findings to you instead.
 

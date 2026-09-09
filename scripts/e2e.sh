@@ -41,6 +41,20 @@ check "state lives under GATEKEEP_HOME, not the repo" '[ -d "$GATEKEEP_HOME/repo
 check "snapshot config stored in session" 'grep -q maxBlocks "$GATEKEEP_HOME"/repos/*/sessions/s1.json'
 hook prompt '{"session_id":"s1","cwd":"'"$R"'","prompt":"make add work"}' >/dev/null
 check "prompt captured" 'grep -q "make add work" "$GATEKEEP_HOME"/repos/*/sessions/s1.json'
+# Claude Code renamed these two fields; both spellings must work or the task statement is silently lost.
+hook prompt '{"session_id":"s1","cwd":"'"$R"'","prompt_text":"and handle negatives"}' >/dev/null
+check "prompt captured under the newer field name (prompt_text)" 'grep -q "and handle negatives" "$GATEKEEP_HOME"/repos/*/sessions/s1.json'
+b1=$(python3 -c "import json,glob;print(json.load(open(glob.glob('$GATEKEEP_HOME/repos/*/sessions/s1.json')[0]))['baseTree'])")
+for reason in resume compact clear fork; do
+  hook session-start '{"session_id":"s1","cwd":"'"$R"'","how":"'"$reason"'"}' >/dev/null
+done
+b2=$(python3 -c "import json,glob;print(json.load(open(glob.glob('$GATEKEEP_HOME/repos/*/sessions/s1.json')[0]))['baseTree'])")
+check "resume/compact/clear/fork keep the baseline (newer field name: how)" '[ "$b1" = "$b2" ]'
+echo 'x = 1' > scratch_new_file.py
+hook session-start '{"session_id":"s1","cwd":"'"$R"'","how":"startup"}' >/dev/null
+b3=$(python3 -c "import json,glob;print(json.load(open(glob.glob('$GATEKEEP_HOME/repos/*/sessions/s1.json')[0]))['baseTree'])")
+check "a fresh start does take a new baseline" '[ "$b1" != "$b3" ]'
+rm -f scratch_new_file.py
 out=$(hook stop '{"session_id":"s1","cwd":"'"$R"'","stop_hook_active":false}' 2>&1); code=$?
 check "clean stop: exit 0 and silent" '[ $code -eq 0 ] && [ -z "$out" ]'
 
@@ -192,6 +206,12 @@ PY
 err=$(hook stop '{"session_id":"c1","cwd":"'"$R"'","transcript_path":"'"$TR"'"}' 2>&1 >/dev/null); code=$?
 check "history rewrite in transcript blocks" '[ $code -eq 2 ] && echo "$err" | grep -q history-rewritten'
 check "stale tests-pass claim and ghost file reported" 'echo "$err" | grep -q claim-tests-unverified && echo "$err" | grep -q "did not change: app/util.py"'
+# The transcript file is written asynchronously, so the harness passes the final message directly; it wins.
+sedi 's/Done. All tests pass. I changed app\/calc.py and app\/util.py./Done./' "$TR"
+both=$(hook stop '{"session_id":"c1","cwd":"'"$R"'","transcript_path":"'"$TR"'"}' 2>&1)
+check "no claim in the transcript: nothing to check" '! echo "$both" | grep -q claim-tests-unverified'
+both=$(hook stop '{"session_id":"c1","cwd":"'"$R"'","transcript_path":"'"$TR"'","last_assistant_message":"Done. All tests pass."}' 2>&1)
+check "last_assistant_message is the final message the claim rules read" 'echo "$both" | grep -q claim-tests-unverified'
 git checkout -q .
 
 echo "== per-change overrides with an audit trail"
