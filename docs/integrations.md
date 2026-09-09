@@ -84,3 +84,15 @@ Every run writes a verdict under `~/.gatekeep/repos/<repo>-<hash>/verdicts/` (pa
 ```
 
 `checks.originalTests` is present when `testCommand` is set, `checks.judge` when the model-backed review is configured (status, model, prompt hash, raw output, truncation), and `overrides` lists every finding an override directive lifted, with who granted it. A triaged finding carries `judge: { verdict, reason }`.
+
+## HTML report
+
+```bash
+gatekeep report                     # latest verdict for this repository -> latest.html beside it, path printed
+gatekeep report --session <id>      # that session's most recent verdict
+gatekeep report path/to/verdict.json --out report.html
+gatekeep report --stdout | ...      # the html on stdout
+gatekeep report --open              # also open it in the browser
+```
+
+One self-contained file: no scripts, no external resources, everything from the session escaped. Each finding shows the test body before and after the session side by side, read from the verdict's two tree objects, with changed lines marked; a finding on a line without a test name shows the surrounding lines instead. Sections for the original-tests run, the model-backed review (summary, prompt hash, raw output), overrides, the examined files, and the verdict JSON. Rendered outside the repository (or after the tree objects are gone), it falls back to the one-line before/after each finding recorded.
