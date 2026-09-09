@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { Finding } from './model.js';
-import type { AnalysisResult } from './rules.js';
+import { familyOf, type AnalysisResult, type Family } from './rules.js';
 import type { TestRunResult } from './testrun.js';
 import type { Override } from './override.js';
 import type { JudgeResult } from './judge.js';
@@ -49,6 +49,41 @@ export async function writeVerdict(root: string, v: Verdict): Promise<string> {
   return p;
 }
 
+/** What to do about a block, by the family that raised it. "Restore the tests" is wrong advice for two thirds of them. */
+const REMEDIATION: Record<Family, string[]> = {
+  'test integrity': [
+    'Restore the tests to their original strength and make the implementation satisfy them. Do not skip, delete,',
+    'weaken, or mock away a test to get a green run.',
+  ],
+  'check integrity': [
+    'Restore the check you weakened: the CI step, the linter or type-checker setting, the pre-commit hook, or the',
+    'suppression comment. A check that no longer runs is not a check that passes.',
+  ],
+  claims: [
+    'Your final message claims something this session does not show. Run the command you said you ran, or correct',
+    'the message to say what actually happened.',
+  ],
+  scope: [
+    'This change reaches outside what the task asked for. Revert the unrelated files, or name them and their reason',
+    'in your final message.',
+  ],
+  'source fitted to the tests': [
+    'The implementation branches on values that only the tests use. Implement the behaviour the specification',
+    'describes, not the cases the tests happen to check.',
+  ],
+  'original tests': [
+    'The tests as they stood at the start of this session fail against your implementation. Fix the implementation.',
+    'Changing the tests until they pass is the thing this gate exists to catch.',
+  ],
+  'model-backed review': [
+    'The model-backed review found the change fitted to the tests rather than to the task.',
+  ],
+  gate: [
+    "gatekeep's own configuration, hook wiring and session state may not be changed during a session. Restore them.",
+    'This one cannot be lifted by an override directive.',
+  ],
+};
+
 const MAX_LISTED = 40;
 
 /** Human/agent-readable report. Written to stderr on block so the agent sees it as its next instruction. */
@@ -94,9 +129,9 @@ export function formatReport(v: Verdict, opts: { forAgent: boolean; verdictPath?
   for (const x of lifted) lines.push(`  [allowed] ${x.rule}  ${clip(x.line ? `${x.file}:${x.line}` : x.file, 200)}${x.test ? ` [${clip(x.test, 120)}]` : ''} — lifted by ${x.overridden}`);
   if (v.decision === 'block' && opts.forAgent) {
     lines.push('');
-    lines.push('You may not finish yet. Restore the tests to their original strength and make the implementation satisfy them.');
-    lines.push('Do not skip, delete, weaken, or mock away tests to get a green run. If a test is genuinely obsolete because the');
-    lines.push('task changed the required behavior, leave it in place, explain exactly why in your final message, and let the user decide.');
+    lines.push('You may not finish yet.');
+    for (const fam of [...new Set(blocks.map((x) => familyOf(x.rule)))]) lines.push(...REMEDIATION[fam]);
+    lines.push('If a finding is genuinely wrong for this change, leave the code as it is, explain exactly why in your final message, and let the user decide.');
     if (v.blockCount >= 2) lines.push(`(This is block ${v.blockCount}. After the configured limit the gate will stop blocking and hand these findings to the user.)`);
   }
   if (opts.verdictPath) lines.push(`verdict: ${opts.verdictPath}`);

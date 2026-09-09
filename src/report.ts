@@ -3,10 +3,7 @@ import type { Verdict } from './verdict.js';
 import type { Lang } from './parser.js';
 import { catFile } from './git.js';
 import { langFor } from './lang.js';
-import { modelFor } from './rules.js';
-import { INTEGRITY_SEVERITIES } from './integrity.js';
-import { CLAIM_SEVERITIES } from './claims.js';
-import { SCOPE_SEVERITIES } from './scope.js';
+import { modelFor, familyOf, type Family } from './rules.js';
 
 /**
  * `gatekeep report`: one self-contained HTML file for a verdict, with the test bodies before and after the session
@@ -19,18 +16,6 @@ export interface ReportOptions {
   verdictPath?: string;
   /** Injected in tests. */
   loadFile?: (tree: string, p: string) => Promise<string | undefined>;
-}
-
-type Family = 'test integrity' | 'check integrity' | 'claims' | 'scope' | 'original tests' | 'model-backed review' | 'gate';
-
-export function familyOf(rule: string): Family {
-  if (rule.startsWith('judge-')) return 'model-backed review';
-  if (rule in INTEGRITY_SEVERITIES) return 'check integrity';
-  if (rule in CLAIM_SEVERITIES) return 'claims';
-  if (rule in SCOPE_SEVERITIES) return 'scope';
-  if (['original-tests-fail', 'tests-failing', 'test-run-timeout', 'test-run-error'].includes(rule)) return 'original tests';
-  if (['gate-config-changed', 'config-invalid', 'session-state-missing'].includes(rule)) return 'gate';
-  return 'test integrity';
 }
 
 export interface Excerpt { start: number; lines: string[]; note?: string }

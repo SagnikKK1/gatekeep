@@ -118,6 +118,20 @@ export interface AnalysisResult {
   changedSourceFiles: string[];
 }
 
+/** Which family a rule belongs to. Used to name the families that actually fired and to address the agent about them. */
+export type Family = 'test integrity' | 'check integrity' | 'claims' | 'scope' | 'source fitted to the tests' | 'original tests' | 'model-backed review' | 'gate';
+
+export function familyOf(rule: string): Family {
+  if (rule.startsWith('judge-')) return 'model-backed review';
+  if (rule === 'test-oracle-in-source') return 'source fitted to the tests';
+  if (rule in INTEGRITY_SEVERITIES) return 'check integrity';
+  if (rule in CLAIM_SEVERITIES) return 'claims';
+  if (rule in SCOPE_SEVERITIES) return 'scope';
+  if (['original-tests-fail', 'tests-failing', 'test-run-timeout', 'test-run-error'].includes(rule)) return 'original tests';
+  if (['gate-config-changed', 'config-invalid', 'session-state-missing', 'state-tampered', 'index-flags-set', 'paths-hidden-from-snapshot'].includes(rule)) return 'gate';
+  return 'test integrity';
+}
+
 export interface AnalyzeOptions {
   /** Does this repo path exist in the current tree? Used to tell first-party modules from packages. */
   exists?: (p: string) => boolean;

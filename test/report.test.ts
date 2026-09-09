@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sliceTest, lineDiff, familyOf, renderReport } from '../src/report.js';
+import { sliceTest, lineDiff, renderReport } from '../src/report.js';
+import { familyOf } from '../src/rules.js';
 import type { Verdict } from '../src/verdict.js';
 
 const L = (s: string) => s.split('\n');
