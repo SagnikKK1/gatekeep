@@ -21,9 +21,10 @@ export const RUBRIC_VERSION = 3;
 export interface JudgeConfig {
   model: string;
   /**
-   * `auto` (the default): the Anthropic SDK when ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is set, otherwise Claude Code
-   * (`claude -p`, which runs on the user's login or CLAUDE_CODE_OAUTH_TOKEN), otherwise the SDK's own profile lookup.
-   * `anthropic`, `claude-code`, or `replay` (a recorded response from GATEKEEP_JUDGE_REPLAY, for tests) pick one explicitly.
+   * Which credential pays for the review, and it is always the user's own.
+   * `anthropic` (the default): the Anthropic SDK — ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an `ant auth login`
+   * profile. `claude-code`: `claude -p`, which spends the user's Claude subscription, so it must be asked for by name.
+   * `auto`: the API credential when one is set, Claude Code otherwise. `replay` replays a recording, for tests.
    */
   provider: string;
   maxDiffBytes: number;
@@ -399,7 +400,10 @@ export function parseClaudeCodeResult(stdout: string, requested: string): JudgeR
   return { model, raw, usage: { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, ...(cost !== undefined ? { costUsd: cost } : {}) } };
 }
 
-/** `auto`: an API credential in the environment wins; otherwise Claude Code if it is installed; otherwise the SDK's profile lookup. */
+/**
+ * `auto`: an API credential in the environment wins; otherwise Claude Code if it is installed. Not the default,
+ * because falling back to Claude Code spends a subscription the user did not offer for this.
+ */
 export const autoProvider: JudgeProvider = async (req) => {
   if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) return anthropicProvider(req);
   const { execFile } = await import('node:child_process');

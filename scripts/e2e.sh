@@ -296,7 +296,7 @@ GATEKEEP_JUDGE_REPLAY="$E2E/replay.json" node "$CLI" run >/tmp/gk_out 2>&1
 check "judge: report shows the review line and the annotation" 'grep -q "model-backed review: replay-model (cached)" /tmp/gk_out && grep -q "judge: looks like evasion" /tmp/gk_out'
 node "$CLI" run --no-judge --json >/tmp/gk_out.json 2>/tmp/gk_err
 check "judge: --no-judge leaves checks.judge out" 'node -e "const v=require(\"/tmp/gk_out.json\");process.exit(v.checks.judge===undefined?0:1)"'
-echo '{"judge": {"model": "claude-opus-5", "provider": "anthropic"}}' > gatekeep.config.json
+echo '{"judge": {"model": "claude-opus-5"}}' > gatekeep.config.json   # no provider: the default must not reach for a subscription
 env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_PROFILE -u CLAUDE_CODE_OAUTH_TOKEN node "$CLI" run --json >/tmp/gk_out.json 2>/tmp/gk_err; code=$?
 check "judge: without credentials the review is skipped with a judge-skipped warning, the gate still decides" 'node -e "const v=require(\"/tmp/gk_out.json\");process.exit(v.checks.judge.status===\"skipped\"&&v.checks.testIntegrity.findings.some(x=>x.rule===\"judge-skipped\"&&x.severity===\"warn\")&&v.decision===\"block\"?0:1)"'
 echo '{"judge": {"model": "claude-opus-5", "provider": "claude-code"}}' > gatekeep.config.json
