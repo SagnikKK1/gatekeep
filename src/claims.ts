@@ -17,7 +17,7 @@ export const CLAIM_SEVERITIES: Record<string, Severity> = {
 export interface TranscriptEvent {
   /** position in the transcript, for ordering */
   i: number;
-  kind: 'text' | 'edit' | 'bash';
+  kind: 'text' | 'edit' | 'bash' | 'read';
   text?: string;
   file?: string;
   command?: string;
@@ -30,7 +30,7 @@ export interface Transcript {
   recognized: boolean;
 }
 
-const TEST_CMD = /\b(pytest|py\.test|python3? -m (pytest|unittest)|unittest|jest|vitest|mocha|ava\b|tap\b|node --test|npm (run )?test|yarn test|pnpm test|bun test|deno test|go test|cargo test|mvn (test|verify)|gradle\w* (test|check)|dotnet test|phpunit|rspec|tox\b|nox\b|make (test|check)|nose2?|karma|cypress run|playwright test)\b/;
+const TEST_CMD = /\b(pytest|py\.test|python3? -m (pytest|unittest)|python3? [\w.\/-]*tests?[\w.\/-]*\.py|unittest|jest|vitest|mocha|ava\b|tap\b|node --test|npm (run )?test|yarn test|pnpm test|bun test|deno test|go test|cargo test|mvn (test|verify)|gradle\w* (test|check)|dotnet test|phpunit|rspec|tox\b|nox\b|make (test|check)|nose2?|karma|cypress run|playwright test)\b/;
 const BUILD_CMD = /\b((npm|pnpm|yarn|bun) (run )?build|tsc\b|cargo build|go build|make\b|gradle\w* (build|assemble)|mvn (package|compile|install)|dotnet build|webpack|vite build|next build|esbuild|rollup|python -m build|setup\.py build)\b/;
 const LINT_CMD = /\b(eslint|ruff|flake8|pylint|biome|golangci-lint|rubocop|clippy|(npm|pnpm|yarn) (run )?lint|prettier --check|black --check|isort --check|stylelint|shellcheck)\b/;
 const TYPE_CMD = /\b(tsc\b|mypy|pyright|(npm|pnpm|yarn) (run )?(typecheck|type-check|types)|flow check)\b/;
@@ -45,7 +45,43 @@ const EXCLUDE_WRITE = /\.git\/info\/exclude|core\.excludesFile|excludesfile/i;
 const STASH_CMD = /\bgit\s+stash\b(?!\s+(pop|apply|list|show|drop))/;
 const STASH_RESTORE = /\bgit\s+stash\s+(pop|apply)\b/;
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
-const BASH_WRITES = /(^|[^2&>])>(?!&)|\bsed\s+-i\b|\btee\b|\bcp\s|\bmv\s|\brm\s|\bgit\s+(checkout|restore|apply|revert)\b|\bpatch\b|\bpython3?\s+-c\b|<<\s*['"]?\w+/;
+const READ_TOOLS = new Set(['Read', 'NotebookRead']);
+const BASH_WRITES = /(^|[^2&>])>(?!&)|\bsed\s+-i\b|\btee\b|\bcp\s|\bmv\s|\brm\s|\bgit\s+(checkout|restore|apply|revert)\b|\bpatch\b|<<\s*['"]?\w+/;
+/**
+ * The shell part of a command: heredoc bodies and the script after `-c` are data, and routinely contain `>` and other
+ * characters that look like redirects. Scanning them for writes is what makes a read-only check look like an edit.
+ */
+function shellOnly(cmd: string): string {
+  const lines = cmd.split('\n');
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    kept.push(line);
+    const here = /<<-?\s*(['"]?)(\w+)\1/.exec(line);
+    if (here) { const end = here[2]!; while (i + 1 < lines.length && lines[i + 1]!.trim() !== end) i++; i++; }
+  }
+  return kept.join('\n').replace(/(^|\s)-c\s+(['"])[\s\S]*?\2/g, '$1-c ARG');
+}
+
+/** `python -c` is usually a read-only check; it is an edit only when the inline script actually writes. */
+const INLINE_PY = /\bpython3?\s+-c\b/;
+const INLINE_PY_WRITES = /\.write(_text|_bytes|lines)?\s*\(|open\s*\([^)]*['"][rbt]*[wax]\+?[rbt]*['"]|\bshutil\.|\bos\.(remove|unlink|rename|replace|makedirs|mkdir|rmdir)\b|\bsubprocess\.|\bPath\([^)]*\)\s*\.\s*(write|touch|unlink|rename)/;
+/**
+ * Where a command redirects its output, ignoring heredoc bodies (`cat > f <<'EOF' ... EOF`), whose text is data and
+ * routinely contains `>`. Returns a path only when every redirect in the command is an absolute one, which is the
+ * case the caller can check against the diff; anything else is left unknown and treated as touching the tree.
+ */
+function redirectTarget(cmd: string): string | undefined {
+  const lines = cmd.split('\n');
+  const targets: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const here = /<<-?\s*(['"]?)(\w+)\1/.exec(line);
+    for (const m of line.matchAll(/(?:^|[^2&>])>>?\s*(['"]?)([^\s|&;'"]+)\1/g)) if (m[2] !== '/dev/null') targets.push(m[2]!);
+    if (here) { const end = here[2]!; while (i + 1 < lines.length && lines[i + 1]!.trim() !== end) i++; i++; }
+  }
+  return targets.length > 0 && targets.every((t) => t.startsWith('/')) ? targets[0] : undefined;
+}
 
 /** Parse a Claude Code transcript. Unknown formats yield recognized=false and no findings. */
 export function parseTranscript(text: string): Transcript {
@@ -70,9 +106,12 @@ export function parseTranscript(text: string): Transcript {
           hadTool = true;
           const name = String(b.name ?? ''); const input = (b.input ?? {}) as Record<string, unknown>;
           if (EDIT_TOOLS.has(name)) events.push({ i: i++, kind: 'edit', file: typeof input.file_path === 'string' ? input.file_path : typeof input.notebook_path === 'string' ? input.notebook_path : undefined });
+          else if (READ_TOOLS.has(name)) events.push({ i: i++, kind: 'read', file: typeof input.file_path === 'string' ? input.file_path : typeof input.notebook_path === 'string' ? input.notebook_path : typeof input.path === 'string' ? input.path : undefined });
           else if (name === 'Bash' && typeof input.command === 'string') {
             events.push({ i: i++, kind: 'bash', command: input.command });
-            if (BASH_WRITES.test(input.command)) events.push({ i: i++, kind: 'edit', command: input.command });
+            const shell = shellOnly(input.command);
+            const inlinePyWrites = INLINE_PY.test(shell) && INLINE_PY_WRITES.test(input.command);
+            if (BASH_WRITES.test(shell) || inlinePyWrites) events.push({ i: i++, kind: 'edit', command: input.command, file: redirectTarget(input.command) });
           }
         }
       }
@@ -105,7 +144,16 @@ export function claimFindings(t: Transcript | null, changes: FileChange[], sever
   const sev = (rule: string): Severity => severities[rule] ?? CLAIM_SEVERITIES[rule] ?? 'warn';
   const emit = (f: Omit<Finding, 'severity'>) => { const s = sev(f.rule); if (s !== 'off') out.push({ ...f, severity: s }); };
   const bash = t.events.filter((e) => e.kind === 'bash');
-  const lastEdit = Math.max(-1, ...t.events.filter((e) => e.kind === 'edit').map((e) => e.i));
+  // An edit only makes a test run stale if it touched the tree under review: an absolute path that matches nothing
+  // in the diff (a scratch file under /tmp, say) leaves the tested code exactly as the run found it.
+  const changedPaths = changes.map((c) => c.path).concat(changes.flatMap((c) => (c.oldPath ? [c.oldPath] : [])));
+  const touchesTree = (e: TranscriptEvent) => {
+    const f = e.file;
+    if (f === undefined || !f.startsWith('/')) return true;
+    const norm = f.replace(/\/+$/, '');
+    return changedPaths.some((p) => norm === p || norm.endsWith('/' + p));
+  };
+  const lastEdit = Math.max(-1, ...t.events.filter((e) => e.kind === 'edit' && touchesTree(e)).map((e) => e.i));
   const lastRun = (re: RegExp) => Math.max(-1, ...bash.filter((e) => re.test(e.command!)).map((e) => e.i));
   const final = t.finalText;
 
@@ -126,7 +174,15 @@ export function claimFindings(t: Transcript | null, changes: FileChange[], sever
   if (mentioned.size > 0) {
     const changed = changes.map((c) => c.path).concat(changes.flatMap((c) => (c.oldPath ? [c.oldPath] : [])));
     const matches = (mention: string, p: string) => p === mention || p.endsWith('/' + mention) || p.split('/').pop() === mention;
-    const ghost = [...mentioned].filter((m) => !changed.some((p) => matches(m, p)));
+    // A file the agent read and then discussed is ordinary reporting, not a claim about a change it did not make.
+    // Only a file the session never touched at all — never read, never named in a command, never changed — is a ghost.
+    const touched = new Set<string>();
+    for (const e of t.events) {
+      if (e.file) touched.add(e.file);
+      if (e.command) for (const m of e.command.matchAll(PATH_RE)) touched.add(m[1]!);
+    }
+    const seen = [...touched].map((p) => p.replace(/^\.\//, ''));
+    const ghost = [...mentioned].filter((m) => !changed.some((p) => matches(m, p)) && !seen.some((p) => matches(m, p)));
     const relevant = changes.filter((c) => langFor(c.path) !== null || isTest(c.path)).map((c) => c.path);
     const unmentioned = relevant.filter((p) => ![...mentioned].some((m) => matches(m, p)));
     if (ghost.length > 0) emit({ rule: 'summary-files-mismatch', file: ghost[0]!, message: `The final message names ${ghost.length} file(s) that did not change: ${ghost.slice(0, 5).join(', ')}` });

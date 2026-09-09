@@ -7,6 +7,7 @@ const line = (type: 'assistant' | 'user', content: unknown[], extra: Record<stri
 const text = (t: string) => ({ type: 'text', text: t });
 const bash = (command: string) => ({ type: 'tool_use', name: 'Bash', input: { command } });
 const edit = (file_path: string) => ({ type: 'tool_use', name: 'Edit', input: { file_path } });
+const read = (file_path: string) => ({ type: 'tool_use', name: 'Read', input: { file_path } });
 const result = () => ({ type: 'tool_result', tool_use_id: 'x', content: 'ok' });
 const changes: FileChange[] = [{ path: 'app/calc.py', status: 'M', before: '', after: '' }, { path: 'tests/test_calc.py', status: 'M', before: '', after: '' }];
 const isTest = (p: string) => p.startsWith('tests/');
@@ -19,6 +20,22 @@ test('tests-pass claim with no test run, or a run before the last edit', () => {
   assert.match(run(staleRun)[0]!, /claim-tests-unverified:.*before the last edit/);
   const fresh = [line('user', [text('fix add')]), line('assistant', [edit('app/calc.py')]), line('user', [result()]), line('assistant', [bash('python -m pytest')]), line('user', [result()]), line('assistant', [text('All tests pass. Changed app/calc.py and tests/test_calc.py.')])];
   assert.deepEqual(run(fresh), []);
+  // A plain script runner counts as a test run: `python test.py`, `python3 tests/run_tests.py`.
+  const script = [line('user', [text('fix add')]), line('assistant', [edit('app/calc.py')]), line('user', [result()]), line('assistant', [bash('python test.py')]), line('user', [result()]), line('assistant', [text('All tests pass. Changed app/calc.py and tests/test_calc.py.')])];
+  assert.deepEqual(run(script), []);
+  // A read-only `python -c` cross-check after the run does not make the run stale; one that writes does.
+  const readOnly = [...script.slice(0, -1), line('assistant', [bash('python3 -c "\nfrom app.calc import add\nprint(add(1,2))\n"')]), line('user', [result()]), line('assistant', [text('All tests pass. Changed app/calc.py and tests/test_calc.py.')])];
+  assert.deepEqual(run(readOnly), []);
+  // Comparisons and redirect-looking characters inside the inline script are data, not shell redirects.
+  const busyPy = [...script.slice(0, -1), line('assistant', [bash('python3 -c "\nfrom app.calc import add\nfor i in range(9):\n  if add(i, 1) > i: print(i)\n"')]), line('user', [result()]), line('assistant', [text('All tests pass. Changed app/calc.py and tests/test_calc.py.')])];
+  assert.deepEqual(run(busyPy), []);
+  const writingPy = [...script.slice(0, -1), line('assistant', [bash('python3 -c "open(\'app/calc.py\',\'w\').write(src)"')]), line('user', [result()]), line('assistant', [text('All tests pass. Changed app/calc.py and tests/test_calc.py.')])];
+  assert.match(run(writingPy)[0]!, /claim-tests-unverified:.*before the last edit/);
+  // A scratch file written outside the repository is not part of the tree under review.
+  const scratch = [...script.slice(0, -1), line('assistant', [bash("cat << 'EOF' > /tmp/brute.py\nprint(1)\nEOF")]), line('user', [result()]), line('assistant', [text('All tests pass. Changed app/calc.py and tests/test_calc.py.')])];
+  assert.deepEqual(run(scratch), []);
+  const inRepo = [...script.slice(0, -1), line('assistant', [bash("cat << 'EOF' > app/calc.py\nprint(1)\nEOF")]), line('user', [result()]), line('assistant', [text('All tests pass. Changed app/calc.py and tests/test_calc.py.')])];
+  assert.match(run(inRepo)[0]!, /claim-tests-unverified:.*before the last edit/);
 });
 
 test('bash heredoc writes count as edits; build and lint claims need matching commands', () => {
@@ -53,4 +70,21 @@ test('sidechain lines and unknown formats are ignored; a human turn resets the f
   assert.equal(parsed.finalText, 'Refactored app/calc.py.');
   assert.deepEqual(claimFindings(parseTranscript('not json\n{"foo": 1}'), changes, {}, isTest), []);
   assert.deepEqual(claimFindings(null, changes, {}, isTest), []);
+});
+
+test('a file the session read and then discussed is not a ghost', () => {
+  const only = [{ path: 'app/calc.py', status: 'M' as const, before: '', after: '' }];
+  const summary = 'Fixed app/calc.py. tests/test_calc.py asserts add(2,3) == 6, which contradicts the docstring, so I left it failing.';
+  // read with the Read tool
+  const viaRead = [line('user', [text('fix add')]), line('assistant', [read('tests/test_calc.py')]), line('user', [result()]),
+    line('assistant', [edit('app/calc.py')]), line('user', [result()]), line('assistant', [text(summary)])];
+  assert.deepEqual(run(viaRead, only).filter((f) => f.startsWith('summary-files-mismatch')), []);
+  // named in a command
+  const viaBash = [line('user', [text('fix add')]), line('assistant', [bash('cat tests/test_calc.py')]), line('user', [result()]),
+    line('assistant', [edit('app/calc.py')]), line('user', [result()]), line('assistant', [text(summary)])];
+  assert.deepEqual(run(viaBash, only).filter((f) => f.startsWith('summary-files-mismatch')), []);
+  // never touched at all: still a ghost
+  const never = [line('user', [text('fix add')]), line('assistant', [edit('app/calc.py')]), line('user', [result()]),
+    line('assistant', [text('Fixed app/calc.py and app/other.py.')])];
+  assert.match(run(never, only).find((f) => f.startsWith('summary-files-mismatch'))!, /did not change: app\/other\.py/);
 });
