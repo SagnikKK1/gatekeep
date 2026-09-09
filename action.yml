@@ -34,10 +34,12 @@ runs:
     - uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.node-version }}
-    - name: Build gatekeep
+    - name: Install gatekeep
       shell: bash
       run: |
         cd "$GITHUB_ACTION_PATH"
+        # dist/src is committed, so there is no TypeScript build here; the parser still needs its wasm dependency.
+        npm ci --omit=dev --silent
         if [ ! -f dist/src/cli.js ]; then npm ci --silent && npm run build --silent; fi
     - name: Resolve the base ref
       id: base

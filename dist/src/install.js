@@ -1,0 +1,146 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const execFileP = promisify(execFile);
+function shellQuote(s) {
+    return /^[A-Za-z0-9_./:@%+=-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+}
+/** Command used inside hook config. `shared` assumes a global `gatekeep` on PATH; otherwise an absolute node invocation. */
+export async function hookCommandPrefix(shared) {
+    if (shared)
+        return 'gatekeep';
+    try {
+        await execFileP('gatekeep', ['--version']);
+        return 'gatekeep';
+    }
+    catch { /* not on PATH */ }
+    const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'cli.js');
+    return `node ${shellQuote(cli)}`;
+}
+export const GATEKEEP_HOOK_RE = /(gatekeep|cli\.js)['"]?\s+hook\s+(session-start|prompt|stop)\b/;
+export function claudeSettingsFile(target, cwd) {
+    if (target === 'global')
+        return path.join(process.env.HOME ?? process.env.USERPROFILE ?? '~', '.claude', 'settings.json');
+    return path.join(cwd, '.claude', target === 'project-shared' ? 'settings.json' : 'settings.local.json');
+}
+async function readSettings(file) {
+    let raw;
+    try {
+        raw = await fs.readFile(file, 'utf8');
+    }
+    catch {
+        return {};
+    }
+    try {
+        return JSON.parse(raw);
+    }
+    catch (e) {
+        throw new Error(`${file} exists but is not valid JSON (${e.message}). Fix it by hand; gatekeep will not overwrite it.`);
+    }
+}
+export async function installClaudeCode(target, cwd) {
+    const file = claudeSettingsFile(target, cwd);
+    const settings = await readSettings(file);
+    settings.hooks = settings.hooks ?? {};
+    const prefix = await hookCommandPrefix(target === 'project-shared');
+    const wanted = {
+        SessionStart: { command: `${prefix} hook session-start --harness claude-code`, timeout: 120 },
+        UserPromptSubmit: { command: `${prefix} hook prompt --harness claude-code`, timeout: 10 },
+        Stop: { command: `${prefix} hook stop --harness claude-code`, timeout: 600 },
+    };
+    const added = [], updated = [];
+    for (const [event, h] of Object.entries(wanted)) {
+        const list = settings.hooks[event] ?? [];
+        let found = false;
+        for (const entry of list) {
+            for (const cmd of entry.hooks ?? []) {
+                if (GATEKEEP_HOOK_RE.test(cmd.command)) {
+                    if (!found) {
+                        if (cmd.command !== h.command || cmd.timeout !== h.timeout) {
+                            cmd.command = h.command;
+                            cmd.timeout = h.timeout;
+                            updated.push(event);
+                        }
+                        found = true;
+                    }
+                    else
+                        cmd.command = ''; // duplicate from an earlier non-idempotent install
+                }
+            }
+            entry.hooks = (entry.hooks ?? []).filter((c) => c.command !== '');
+        }
+        const cleaned = list.filter((e) => e.hooks.length > 0);
+        if (!found) {
+            cleaned.push({ hooks: [{ type: 'command', command: h.command, timeout: h.timeout }] });
+            added.push(event);
+        }
+        settings.hooks[event] = cleaned;
+    }
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify(settings, null, 2) + '\n');
+    return { file, added, updated };
+}
+export async function uninstallClaudeCode(target, cwd) {
+    const file = claudeSettingsFile(target, cwd);
+    const settings = await readSettings(file);
+    let removed = 0;
+    for (const [event, list] of Object.entries(settings.hooks ?? {})) {
+        for (const entry of list) {
+            const before = entry.hooks.length;
+            entry.hooks = entry.hooks.filter((c) => !GATEKEEP_HOOK_RE.test(c.command));
+            removed += before - entry.hooks.length;
+        }
+        settings.hooks[event] = list.filter((e) => e.hooks.length > 0);
+        if (settings.hooks[event].length === 0)
+            delete settings.hooks[event];
+    }
+    if (removed > 0)
+        await fs.writeFile(file, JSON.stringify(settings, null, 2) + '\n');
+    return { file, removed };
+}
+/** Which Claude Code settings files currently carry gatekeep hooks. */
+export async function installedHooks(cwd) {
+    const out = [];
+    for (const kind of ['project-local', 'project-shared', 'global']) {
+        const file = claudeSettingsFile(kind, cwd);
+        let s;
+        try {
+            s = await readSettings(file);
+        }
+        catch {
+            out.push({ file, events: ['(unparseable)'] });
+            continue;
+        }
+        const events = Object.entries(s.hooks ?? {}).filter(([, list]) => list.some((e) => e.hooks?.some((c) => GATEKEEP_HOOK_RE.test(c.command)))).map(([ev]) => ev);
+        if (events.length)
+            out.push({ file, events });
+    }
+    return out;
+}
+export async function installCodex(cwd) {
+    const file = path.join(process.env.HOME ?? '~', '.codex', 'hooks.json');
+    const prefix = await hookCommandPrefix(false);
+    const settings = await readSettings(file);
+    settings.hooks = settings.hooks ?? {};
+    const wanted = {
+        SessionStart: `${prefix} hook session-start --harness codex`,
+        UserPromptSubmit: `${prefix} hook prompt --harness codex`,
+        Stop: `${prefix} hook stop --harness codex`,
+    };
+    for (const [event, command] of Object.entries(wanted)) {
+        const list = settings.hooks[event] ?? [];
+        const existing = list.flatMap((e) => e.hooks).find((c) => GATEKEEP_HOOK_RE.test(c.command));
+        if (existing)
+            existing.command = command;
+        else
+            list.push({ hooks: [{ type: 'command', command, timeout: 300 }] });
+        settings.hooks[event] = list;
+    }
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify(settings, null, 2) + '\n');
+    void cwd;
+    return { file, note: 'Codex hook support varies by version and hooks must be trusted per Codex policy; this path is untested against a live Codex install.' };
+}
+//# sourceMappingURL=install.js.map
