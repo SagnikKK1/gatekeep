@@ -60,6 +60,7 @@ Part of [gatekeep](../README.md): every rule and its default severity.
 | `feature-deleted` | block | A top-level function or class removed from source in the same change as the tests that referenced it |
 | `out-of-scope-change` | warn | The task names specific files, and source files unrelated to those names changed too |
 | `validation-removed` | warn | Net removal of `assert`, `invariant(...)`, `throw new ...Error` guards or `raise ...Error` checks from source |
+| `test-oracle-in-source` | warn | The implementation is fitted to the tests rather than the specification: a new condition comparing against a value only the tests used, a condition whose constants are those of a single test case, a table keyed by test values, source that reads the test runner's environment (`PYTEST_CURRENT_TEST`, `JEST_WORKER_ID`, `NODE_ENV === 'test'`), or executable code naming a test file. Comments are not evidence — an agent that reports a wrong assertion and implements the specification anyway writes exactly that |
 | `timeout-increased` | off | A test timeout is raised |
 | `judge-test-weakened` | warn | Model-backed review (opt-in): a test still passes but no longer checks what the task requires |
 | `judge-special-casing` | warn | Model-backed review: the implementation is fitted to the test inputs rather than the behavior |
