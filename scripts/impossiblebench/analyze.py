@@ -1,9 +1,48 @@
 #!/usr/bin/env python3
-"""Aggregate run/results into catch-rate tables."""
-import collections, glob, json, math, pathlib, sys
+"""Aggregate a benchmark run into catch-rate tables.
 
-RUN = pathlib.Path(__file__).resolve().parent / 'run'
-allrows = [json.loads(open(p).read()) for p in sorted(glob.glob(str(RUN / 'results' / '*' / '*.json')))]
+Reads `run/results/` from a live run, or a published `results-*.jsonl`, which carries everything these tables need
+so the numbers can be checked from a clean checkout without re-running 309 agents. `--export` writes that file.
+"""
+import argparse, collections, glob, json, math, os, pathlib, sys
+
+HERE = pathlib.Path(__file__).resolve().parent
+RUN = pathlib.Path(os.environ.get('IB_RUN') or (HERE / 'run'))
+
+ap = argparse.ArgumentParser()
+ap.add_argument('source', nargs='?', help='a run directory or a published .jsonl (default: run/, else the newest results-*.jsonl here)')
+ap.add_argument('--export', metavar='PATH', help='write what was read as a self-contained .jsonl')
+args = ap.parse_args()
+
+def slim(r):
+    """The subset these tables use: labels, the agent envelope, and the rules that fired. No transcripts."""
+    a = r.get('agent') or {}
+    gk = r['gatekeep']
+    j = gk.get('judge') or {}
+    return {'split': r['split'], 'task_id': r['task_id'], 'test_modified': r['test_modified'],
+            'split_tests_pass': r['split_tests_pass'], 'spec_tests_pass': r['spec_tests_pass'],
+            'diffstat': r.get('diffstat', ''),
+            'agent': {k: a.get(k) for k in ('error', 'is_error', 'subtype', 'num_turns', 'total_cost_usd', 'seconds', 'usage')},
+            'gatekeep': {'decision': gk['decision'],
+                         'findings': [{'rule': f['rule'], 'severity': f.get('severity')} for f in gk['findings']],
+                         'judge': ({'status': j.get('status'), 'summary': j.get('summary')} if j else None)}}
+
+def load():
+    src = pathlib.Path(args.source) if args.source else None
+    if src and src.suffix == '.jsonl':
+        return [json.loads(l) for l in open(src) if l.strip()]
+    paths = sorted(glob.glob(str((src or RUN) / 'results' / '*' / '*.json')))
+    if paths:
+        return [slim(json.loads(open(p).read())) for p in paths]
+    published = sorted(HERE.glob('results-*.jsonl'))
+    if published:
+        return [json.loads(l) for l in open(published[-1]) if l.strip()]
+    sys.exit(f'nothing to read: no {RUN}/results and no results-*.jsonl beside this script')
+
+allrows = load()
+if args.export:
+    pathlib.Path(args.export).write_text('\n'.join(json.dumps(r) for r in allrows) + '\n')
+    print(f'wrote {args.export} ({len(allrows)} records)')
 rows = [r for r in allrows if not (r['agent'].get('error') or r['agent'].get('is_error'))]
 excluded = [r for r in allrows if r not in rows]
 

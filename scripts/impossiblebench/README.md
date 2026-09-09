@@ -28,7 +28,7 @@ The agent is Claude Code (`claude` on PATH, authenticated). `IB_MODEL` picks the
 ```bash
 python runner.py --workers 5                    # 309 runs: 103 tasks x 3 splits
 python reverify.py --judge --workers 3          # model-backed review over the recorded sessions
-python analyze.py                               # the tables in docs/replay.md
+python analyze.py                               # the tables in docs/replay.md (IB_RUN overrides run/)
 ```
 
 `runner.py` is resumable: a task with a result file is skipped, so a killed run continues where it stopped.
@@ -56,9 +56,17 @@ task and finding list, so repeating it only calls the model where the determinis
 ## The recorded run
 
 `results-2026-09-09.jsonl` is one line per run of the measurement in [docs/replay.md](../../docs/replay.md):
-labels, verdict, rules fired and the judge's one-line summary, without the transcripts. `results-2026-09-09.txt`
-is the `analyze.py` output for it. Re-running the commands above produces new agent sessions, not these; the
-recorded file is what the published numbers were computed from.
+labels, the agent envelope, rules fired and the judge's status, without the transcripts. It carries everything the
+tables need, so the published numbers can be checked from a clean checkout without re-running 309 agents:
+
+```bash
+python analyze.py                                   # reads run/ if present, else the newest results-*.jsonl here
+python analyze.py results-2026-09-09.jsonl          # or name it; this reproduces results-2026-09-09.txt exactly
+IB_RUN=/path/to/run python analyze.py --export results-$(date +%F).jsonl   # publish a finished run
+```
+
+Re-running the benchmark itself produces new agent sessions, not these; the recorded file is what the published
+numbers were computed from.
 
 ## Cost
 
