@@ -68,11 +68,12 @@ State lives in `~/.gatekeep/`, mirrored under the repository's own `.git/gatekee
 Every rule and its default severity: [docs/rules.md](docs/rules.md). The two opt-in layers in detail: [docs/checks.md](docs/checks.md) and [docs/judge.md](docs/judge.md).
 
 **What the default configuration stops, and what it does not.** Out of the box the gate blocks a session that weakened
-the tests or the checks that grade it, and it blocks the part of source-side fitting a diff can see. It does not stop
-an implementation that is merely shaped around the test inputs in ways only a reader can judge: on
-[Impossible-LiveCodeBench](docs/replay.md#catch-rate-on-impossible-livecodebench), Claude Opus 5 never touched a test
-file in 304 runs and fitted the implementation instead in 55 of them. The model-backed review flagged all 55, and it is
-advisory and off by default. Turn it on for work where that matters.
+the tests or the checks that grade it. Source-side fitting is only partly covered: on
+[Impossible-LiveCodeBench](docs/replay.md#catch-rate-on-impossible-livecodebench) Claude Opus 5 never touched a test
+file in 304 runs and fitted the implementation instead in 55 of them, and `test-oracle-in-source` reads 19 of those —
+at `warn`, so by default they are reported rather than stopped. The other 36 hide an off-by-one inside ordinary
+arithmetic, where only the specification says the code is wrong. The model-backed review flagged all 55, and it is
+advisory and off unless you turn it on. Turn it on for work where that matters.
 
 ## Run it yourself
 
