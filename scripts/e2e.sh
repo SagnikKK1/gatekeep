@@ -177,6 +177,21 @@ echo '{"rules":{"test-deleted":"off","gate-config-changed":"off"}}' > gatekeep.c
 err=$(hook stop '{"session_id":"s6","cwd":"'"$R"'"}' 2>/dev/null); code=$?
 check "config written mid-session is not honored" 'blocked "$err" && echo "$err" | grep -q test-deleted'
 git checkout -q . && rm -f gatekeep.config.json && git reset -q --hard HEAD~1
+echo "== installing gatekeep mid-session does not block on gatekeep's own files"
+M="$E2E/midinstall"; mkdir -p "$M/app" "$M/tests"; cd "$M"; git init -q -b main
+printf 'def add(a, b):\n    return a + b\n' > app/calc.py
+printf 'from app.calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n' > tests/test_calc.py
+git add -A && git commit -qm base
+node "$CLI" install >/dev/null 2>&1   # writes untracked .claude/settings.local.json and gatekeep.config.json
+out=$(hook stop '{"session_id":"mid1","cwd":"'"$M"'"}' 2>/dev/null); code=$?
+check "a stop with no baseline does not blame the agent for the installer's own files" '[ $code -eq 0 ] && ! echo "$out" | grep -q gate-config-changed'
+check "it still says the baseline was missing" 'echo "$out" | grep -q session-state-missing'
+hook session-start '{"session_id":"mid2","cwd":"'"$M"'","source":"startup"}' >/dev/null
+echo '{"maxBlocks": 99}' > gatekeep.config.json
+err=$(hook stop '{"session_id":"mid2","cwd":"'"$M"'"}' 2>/dev/null); code=$?
+check "editing the config inside a real session still blocks" 'blocked "$err" && echo "$err" | grep -q gate-config-changed'
+cd "$R"
+
 echo "== honest work in a protected path passes silently"
 A="$E2E/authfix"; mkdir -p "$A/src/auth" "$A/tests"; cd "$A"; git init -q -b main
 printf 'def login(user, pw):\n    if pw == "":\n        return None\n    return {"ok": True}\n' > src/auth/login.py

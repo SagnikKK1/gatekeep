@@ -129,11 +129,11 @@ async function baseTestFiles(root: string, base: string, cfg: GatekeepConfig, ch
   return out;
 }
 
-async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sessionMode: boolean, transcriptPath?: string, task?: string | null, finalText?: string): Promise<Analysis> {
+async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sessionMode: boolean, transcriptPath?: string, task?: string | null, finalText?: string, noBaseline?: boolean): Promise<Analysis> {
   const snapshot: SnapshotProblems = { indexFlags: [], hidden: [] };
   const cur = await snapshotWorkingTree(root, snapshot);
   const changes = await diffTrees(root, base, cur, { shouldLoad: (p) => needsContent(p, cfg.rules), maxBytes: 2 * 1024 * 1024 });
-  const result = await analyze(changes, cfg.rules, { exists: (p) => existsSync(path.join(root, p)), sessionMode, task, baseTestFiles: await baseTestFiles(root, base, cfg, changes) });
+  const result = await analyze(changes, cfg.rules, { exists: (p) => existsSync(path.join(root, p)), sessionMode, task, noBaseline, baseTestFiles: await baseTestFiles(root, base, cfg, changes) });
   const originalTests = base === cur ? null : await runOriginalTests(root, base, cur, changes, cfg.rules, { testCommand: cfg.testCommand, testTimeoutMs: cfg.testTimeoutMs });
   result.findings.push(...testRunFindings(originalTests, cfg.rules.severities));
   // Both of these keep files out of `git add -A`, and neither lives in the tree, so no diff can show them changing.
@@ -308,6 +308,7 @@ async function stopHook(root: string, sessionId: string, harness: string, input:
   {
     const loaded = await loadSessionChecked(root, sessionId, gd);
     let s = loaded.state;
+    const noBaseline = s === null;
     const stateFindings: Finding[] = [];
     if (!s) {
       // No baseline at all: either the hook was installed mid-session, or the session state was deleted. Fall back to HEAD and say so.
@@ -324,7 +325,7 @@ async function stopHook(root: string, sessionId: string, harness: string, input:
     }
     const t0 = Date.now();
     const { cfg, findings: cfgFindings } = await configFor(root, null, s);
-    const a = await runAnalysis(root, s.baseTree, cfg, true, typeof input.transcript_path === 'string' ? input.transcript_path : undefined, s.prompt, typeof input.last_assistant_message === 'string' ? input.last_assistant_message : undefined);
+    const a = await runAnalysis(root, s.baseTree, cfg, true, typeof input.transcript_path === 'string' ? input.transcript_path : undefined, s.prompt, typeof input.last_assistant_message === 'string' ? input.last_assistant_message : undefined, noBaseline);
     const { cur, result, originalTests } = a;
     // Protected files compared from disk: catches gitignored hook settings the tree diff cannot see.
     if (s.protectedHashes) {

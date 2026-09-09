@@ -127,6 +127,8 @@ export interface AnalyzeOptions {
   task?: string | null;
   /** Test files as they stood at session start. Unchanged ones are not in the diff, and the oracle rule needs them. */
   baseTestFiles?: Map<string, string>;
+  /** True when no session baseline existed and the comparison fell back to HEAD, so "added" only means "not committed". */
+  noBaseline?: boolean;
 }
 
 interface Examined { c: FileChange; before: TestFileModel | null; after: TestFileModel | null }
@@ -153,7 +155,10 @@ export async function analyze(changes: FileChange[], cfg: RuleConfig = DEFAULT_R
   const conftests: FileChange[] = [];
   for (const c of visible) {
     if (isProtectedFile(c.path) || (c.oldPath && isProtectedFile(c.oldPath))) {
-      if (sessionMode) emit({ rule: 'gate-config-changed', file: c.path, message: `${c.status === 'D' ? 'Deleted' : c.status === 'A' ? 'Created' : 'Modified'} ${c.path}: the gate's configuration and hook wiring may not be changed by the agent` });
+      // Installing gatekeep from inside a session leaves its own untracked config and hook settings. Against a HEAD
+      // fallback those look "created", but a file with no baseline cannot have been changed during the session.
+      const installArtifact = opts.noBaseline === true && c.status === 'A';
+      if (sessionMode && !installArtifact) emit({ rule: 'gate-config-changed', file: c.path, message: `${c.status === 'D' ? 'Deleted' : c.status === 'A' ? 'Created' : 'Modified'} ${c.path}: the gate's configuration and hook wiring may not be changed by the agent` });
       continue;
     }
     if (matchesAny(c.path, cfg.testConfigGlobs) && !isTestFile(c.path, cfg)) {
