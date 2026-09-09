@@ -2,17 +2,23 @@ Part of [gatekeep](../README.md): false-positive replay on real history, and the
 
 ## False-positive replay on real history
 
-`scripts/corpus-fp.mjs <repo> <n>` replays the last `n` first-parent commits of any repository through the rules. Every hit on reviewed human commits is either a true detection or a false positive to fix. Numbers on the last 300 first-parent commits of each, test-integrity rules only; flask, express and zod reproduced on fresh clones on 2026-09-09, the others from the day before:
+`scripts/corpus-fp.mjs <repo> <n>` replays the last `n` first-parent commits of any repository through the rules.
+Every hit on reviewed human commits is either a true detection or a false positive to fix. Measured 2026-09-10 on
+fresh clones, last 300 first-parent commits of each, all deterministic families:
 
-| Repo | Commits touching tests | Findings | Of which blocking | Blocking, by rule |
+| Repo | Commits touching tests | Findings | Commits a block would stop | Blocking, by rule |
 |---|---|---|---|---|
-| flask | 140 | 53 | 32 | test-deleted 23, test-config-narrowed 5, assertion-weakened 4 |
-| express | 93 | 149 | 105 | test-deleted 84, assertion-weakened 9, test-skipped 6, test-file-deleted 5, assertions-removed 1 |
-| zod | 155 | 28 | 16 | test-deleted 12, test-file-deleted 2, assertion-swallowed 1, assertion-weakened 1 |
-| cobra (Go) | 119 | 39 | 5 | test-file-deleted 2, ci-check-removed 2, test-deleted 1 |
-| clap (Rust) | 77 | 48 | 2 | test-deleted 1, ci-check-removed 1; 18 `test-file-unparseable` warnings from snapbox's `str![[...]]` macro, which this grammar build cannot parse, so count-based rules stand down on those files |
-| gson (Java) | 153 | 28 | 9 | test-deleted 2, test-file-deleted 2, assertion-weakened 2, assertion-swallowed 2, test-skipped 1 |
-| sinatra (Ruby) | 129 | 53 | 16 | test-file-deleted 12 (a removed feature's specs), test-deleted 4 |
+| flask | 140 | 137 | 7 (5.0%) | test-deleted 7, assertion-weakened 1, ci-check-removed 1 |
+| express | 93 | 194 | 7 (7.5%) | test-deleted 24, test-skipped 6, assertion-weakened 4 |
+| zod | 156 | 48 | 11 (7.1%) | test-deleted 12, test-file-deleted 2, assertion-swallowed 1, ci-check-removed 1, assertion-weakened 1 |
+| cobra (Go) | 119 | 39 | 4 (3.4%) | ci-check-removed 2, test-file-deleted 2, test-deleted 1 |
+| clap (Rust) | 77 | 48 | 2 (2.6%) | test-deleted 1, ci-check-removed 1 |
+| gson (Java) | 154 | 28 | 6 (3.9%) | test-deleted 2, test-file-deleted 2, assertion-weakened 2, assertion-swallowed 2, test-skipped 1 |
+| sinatra (Ruby) | 129 | 53 | 13 (10.1%) | test-file-deleted 12, test-deleted 4 |
+
+**Across all seven, 50 of 868 test-touching commits carry a blocking finding: 5.8%.** Count commits, not findings —
+blocking findings cluster hard. express's 34 land in 7 commits, one of which is a 4.x-into-5.x merge that deletes
+eleven tests at once; a per-finding rate would read as 37% and describe nothing a user would experience.
 
 The residual is almost entirely `test-deleted` and `test-file-deleted` on commits that genuinely removed tests (express's five deleted test files are commits titled "Remove req.param()" and the like). The nine express `assertion-weakened` hits are merges of 4.x releases into 5.x where `err.message.should.equal('...')` became `assert.ok(err)`: a specific check replaced by a truthiness check, by maintainers, during a test-framework migration. Those are true detections too, of the kind a reviewer would want to see. Inside an agent session that is the intended behavior; the override directive, the block limit and the per-rule severities are the escape hatches.
 
