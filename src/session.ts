@@ -7,8 +7,8 @@ export interface SessionState {
   id: string;
   /** Set when the home copy was missing and the state came from the .git mirror. */
   recovered?: boolean;
-  /** Set when a stored copy failed its signature check: which one, so the caller can say so. */
-  tampered?: 'mirror' | 'home';
+  /** Set when a stored copy failed its signature check, or when the key that signed it is gone. */
+  tampered?: 'mirror' | 'home' | 'key-missing';
   /** HMAC over the rest of the record. Not part of the signed payload. */
   sig?: string;
   harness: string;
@@ -107,20 +107,24 @@ export async function loadSessionChecked(root: string, id: string, gitDir: strin
   if (!home && !mirror) return { state: null, unverifiable: false };
 
   const key = await hmacKey(root, false);
-  // No key yet: state written before signing existed, or a fresh home directory. Accept once; the next save signs it.
+  // A copy carrying a signature was written by a key that existed, so a missing key means the key was removed rather
+  // than never created. The baseline is still the best evidence available and is used, but it can no longer be
+  // trusted to be the one this session started with, and the caller says so at block severity.
+  const keyMissing = key === null && (home?.sig !== undefined || mirror?.sig !== undefined);
+  // No key and no signatures: state written before signing existed, or a fresh home. Accept; the next save signs it.
   const ok = (x: SessionState | null): boolean => x !== null && (key === null ? true : verify(key, x));
   const homeOk = ok(home), mirrorOk = ok(mirror);
   if (!homeOk && !mirrorOk) return { state: null, unverifiable: true };
 
-  if (homeOk && mirrorOk) {
+  if (homeOk && mirrorOk && !keyMissing) {
     // Both verify: the mirror is authoritative because it survives a wipe of the state home.
     const h = home!, m = mirror!;
     h.blocks = Math.max(m.blocks ?? 0, h.blocks ?? 0);
     h.baseTree = m.baseTree; h.configText = m.configText; h.protectedHashes = m.protectedHashes;
     return { state: h, unverifiable: false };
   }
-  if (homeOk) return { state: { ...home!, ...(mirror ? { tampered: 'mirror' as const } : {}) }, unverifiable: false };
-  return { state: { ...mirror!, recovered: !home, ...(home ? { tampered: 'home' as const } : {}) }, unverifiable: false };
+  if (homeOk) return { state: { ...home!, ...(keyMissing ? { tampered: 'key-missing' as const } : mirror ? { tampered: 'mirror' as const } : {}) }, unverifiable: false };
+  return { state: { ...mirror!, recovered: !home, ...(keyMissing ? { tampered: 'key-missing' as const } : home ? { tampered: 'home' as const } : {}) }, unverifiable: false };
 }
 
 export async function loadSession(root: string, id: string, gitDir: string | null = null): Promise<SessionState | null> {

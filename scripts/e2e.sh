@@ -161,6 +161,13 @@ node -e "const f=require('fs');const cp=require('child_process');for (const p of
 err=$(hook stop '{"session_id":"s5d","cwd":"'"$R"'"}' 2>/dev/null); code=$?
 check "no verifiable copy: session-state-missing blocks instead of warning" 'blocked "$err" && echo "$err" | grep -q session-state-missing'
 git checkout -q .
+# deleting the key is not a way to make forged state verify
+hook session-start '{"session_id":"s5e","cwd":"'"$R"'","source":"startup"}' >/dev/null
+sedi '/def test_add_zero/,$d' tests/test_calc.py
+rm -f "$GATEKEEP_HOME"/repos/*/hmac.key
+err=$(hook stop '{"session_id":"s5e","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check "removing the signing key is itself a finding, and the real one still lands" 'blocked "$err" && echo "$err" | grep -q state-tampered && echo "$err" | grep -q test-deleted'
+git checkout -q .
 git reset -q --hard HEAD~1
 echo "== no config at session start: agent-written config is ignored"
 git rm -q --cached gatekeep.config.json && rm gatekeep.config.json && git commit -qm "no config"
