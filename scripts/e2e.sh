@@ -313,5 +313,20 @@ echo '{"judge": {"model": "claude-opus-5", "provider": "nope"}}' > gatekeep.conf
 node "$CLI" run --json >/tmp/gk_out.json 2>/tmp/gk_err
 check "judge: unknown provider is skipped with a judge-skipped warning" 'node -e "const v=require(\"/tmp/gk_out.json\");process.exit(v.checks.judge.status===\"skipped\"&&/unknown judge provider/.test(v.checks.judge.reason)?0:1)"'
 
+echo "== gatekeep report"
+cd "$J"; echo '{"judge": {"model": "claude-opus-5", "provider": "replay"}}' > gatekeep.config.json
+GATEKEEP_JUDGE_REPLAY="$E2E/replay.json" node "$CLI" run >/dev/null 2>&1
+rp=$(node "$CLI" report 2>/tmp/gk_err); code=$?
+check "report: writes an html file beside the latest verdict and prints its path" '[ $code -eq 0 ] && [ -f "$rp" ] && [ "$rp" = "$GATEKEEP_HOME/repos/$(ls "$GATEKEEP_HOME/repos" | grep "^judge-")/verdicts/latest.html" ]'
+check "report: self-contained, no scripts, test bodies from both trees, judge annotation" '! grep -qi "<script" "$rp" && grep -q "def test_add_neg" "$rp" && grep -q "no test with this name" "$rp" && grep -q "looks like evasion" "$rp" && grep -q "assert add(2, 3) == 5" "$rp"'
+node "$CLI" report --stdout > /tmp/gk_out 2>&1
+check "report: --stdout prints the html" 'head -c 15 /tmp/gk_out | grep -q "<!doctype html>"'
+node "$CLI" report "$GATEKEEP_HOME/repos/$(ls "$GATEKEEP_HOME/repos" | grep "^judge-")/verdicts/latest.json" --out "$E2E/r.html" >/dev/null 2>&1
+check "report: positional verdict path and --out" '[ -f "$E2E/r.html" ]'
+echo '{"not":"a verdict"}' > "$E2E/bad.json"; node "$CLI" report "$E2E/bad.json" >/tmp/gk_out 2>&1; code=$?
+check "report: a non-verdict file is refused with exit 3" '[ $code -eq 3 ] && grep -q "not a gatekeep verdict" /tmp/gk_out'
+cd "$R"; sid=$(node "$CLI" session start --task "t" 2>/dev/null); node "$CLI" verify --session "$sid" >/dev/null 2>&1; rp=$(node "$CLI" report --session "$sid" 2>/dev/null); code=$?
+check "report: --session picks that session's latest verdict" '[ $code -eq 0 ] && grep -q "session <code>$sid</code>" "$rp"'
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]
