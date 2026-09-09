@@ -178,8 +178,8 @@ function pairHtml(p: Pair, f: Finding): string {
   return `<div class="pair"><div class="pair-h">${esc(label)}</div><div class="panes">${pane('before the session', p.before, marks?.a ?? null, 'del', focus)}${pane('after the session', p.after, marks?.b ?? null, 'add', focus)}</div></div>`;
 }
 
-function findingHtml(f: Finding, p: Pair | null, lifted: boolean): string {
-  const sev = lifted ? 'allowed' : f.severity;
+function findingHtml(f: Finding, p: Pair | null, lifted: boolean, sugg = false): string {
+  const sev = lifted ? 'allowed' : sugg ? 'suggestion' : f.severity;
   const loc = f.line ? `${f.file}:${f.line}` : f.file;
   let s = `<article class="finding ${sev}"><header><span class="badge ${sev}">${esc(sev)}</span><code class="rule">${esc(f.rule)}</code><span class="fam">${esc(familyOf(f.rule))}</span><span class="loc">${esc(loc)}</span>${f.test ? `<span class="test">${esc(f.test)}</span>` : ''}</header>`;
   s += `<p class="msg">${esc(f.message)}</p>`;
@@ -191,8 +191,8 @@ function findingHtml(f: Finding, p: Pair | null, lifted: boolean): string {
 }
 
 const CSS = `
-:root{--bg:#fff;--fg:#1b1b1b;--muted:#5f6368;--line:#e3e3e3;--card:#fafafa;--block:#b3261e;--block-bg:#fdecea;--warn:#8a5a00;--warn-bg:#fff4d6;--pass:#1e7a3c;--pass-bg:#e6f4ea;--allowed:#4a5568;--allowed-bg:#edf2f7;--del:#ffe9e6;--add:#e6ffed;--focus:#fff3bf;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-@media(prefers-color-scheme:dark){:root{--bg:#121212;--fg:#e6e6e6;--muted:#a0a0a0;--line:#2c2c2c;--card:#1a1a1a;--block:#ff8a80;--block-bg:#3a1b19;--warn:#ffcf70;--warn-bg:#3a2e12;--pass:#7fd39a;--pass-bg:#15301f;--allowed:#b8c2cc;--allowed-bg:#232a31;--del:#3a1f1f;--add:#1c3324;--focus:#3a3316}}
+:root{--bg:#fff;--fg:#1b1b1b;--muted:#5f6368;--line:#e3e3e3;--card:#fafafa;--block:#b3261e;--block-bg:#fdecea;--warn:#8a5a00;--warn-bg:#fff4d6;--pass:#1e7a3c;--pass-bg:#e6f4ea;--sugg:#5b4bb8;--sugg-bg:#eeebfa;--allowed:#4a5568;--allowed-bg:#edf2f7;--del:#ffe9e6;--add:#e6ffed;--focus:#fff3bf;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media(prefers-color-scheme:dark){:root{--bg:#121212;--fg:#e6e6e6;--muted:#a0a0a0;--line:#2c2c2c;--card:#1a1a1a;--block:#ff8a80;--block-bg:#3a1b19;--warn:#ffcf70;--warn-bg:#3a2e12;--pass:#7fd39a;--pass-bg:#15301f;--sugg:#b3a6ff;--sugg-bg:#241f3a;--allowed:#b8c2cc;--allowed-bg:#232a31;--del:#3a1f1f;--add:#1c3324;--focus:#3a3316}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 main{max-width:1200px;margin:0 auto;padding:24px 20px 60px}h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:32px 0 10px;border-bottom:1px solid var(--line);padding-bottom:4px}
 .decision{display:inline-block;font-weight:700;padding:4px 12px;border-radius:6px;margin-right:8px}.decision.block{color:var(--block);background:var(--block-bg)}.decision.warn{color:var(--warn);background:var(--warn-bg)}.decision.pass{color:var(--pass);background:var(--pass-bg)}
@@ -200,6 +200,7 @@ main{max-width:1200px;margin:0 auto;padding:24px 20px 60px}h1{font-size:22px;mar
 .task{margin:14px 0;padding:12px 14px;background:var(--card);border:1px solid var(--line);border-radius:8px;white-space:pre-wrap}
 .cards{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0}.card{padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:var(--card);min-width:120px}.card b{display:block;font-size:20px}.card span{color:var(--muted);font-size:12px}
 .finding{border:1px solid var(--line);border-left-width:4px;border-radius:8px;padding:12px 14px;margin:12px 0;background:var(--card)}.finding.block{border-left-color:var(--block)}.finding.warn{border-left-color:var(--warn)}.finding.allowed{border-left-color:var(--allowed);opacity:.85}
+.finding.suggestion{border-left-color:var(--sugg)}.badge.suggestion{color:var(--sugg);background:var(--sugg-bg)}.card.sugg b{color:var(--sugg)}h2.sugg-h{color:var(--sugg)}
 .finding header{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:baseline}.badge{font-size:11px;font-weight:700;text-transform:uppercase;padding:2px 8px;border-radius:10px}.badge.block{color:var(--block);background:var(--block-bg)}.badge.warn{color:var(--warn);background:var(--warn-bg)}.badge.allowed{color:var(--allowed);background:var(--allowed-bg)}
 .rule{font-family:var(--mono);font-weight:600}.fam{color:var(--muted);font-size:12px}.loc,.test{font-family:var(--mono);font-size:12px;color:var(--muted)}.msg{margin:8px 0 4px}.lifted{color:var(--allowed);font-size:13px;margin:4px 0}
 .judge{margin:6px 0;padding:8px 10px;border-radius:6px;font-size:13px;background:var(--allowed-bg)}.judge.looks-like-evasion{background:var(--warn-bg)}.judge.consistent-with-task{background:var(--pass-bg)}
@@ -220,7 +221,11 @@ export async function renderReport(v: Verdict, opts: ReportOptions): Promise<str
   const live = all.filter((f) => !f.overridden);
   const strictBlock = v.decision === 'block' && !live.some((f) => f.severity === 'block');
   const blocks = live.filter((f) => f.severity === 'block' || (strictBlock && f.severity === 'warn'));
-  const warns = live.filter((f) => !blocks.includes(f));
+  const rest = live.filter((f) => !blocks.includes(f));
+  // The model-backed review is advisory: it can add a finding and annotate a blocking one, never decide the verdict.
+  // Keeping its findings out of the warnings makes the report say which layer actually held the gate.
+  const suggestions = rest.filter((f) => f.rule.startsWith('judge-'));
+  const warns = rest.filter((f) => !f.rule.startsWith('judge-'));
   const ordered = [...blocks, ...warns, ...lifted];
   const pairs = new Map<Finding, Pair | null>();
   await Promise.all(ordered.slice(0, MAX_EXCERPTED).map(async (f) => pairs.set(f, await excerptFor(f, v, reader))));
@@ -241,7 +246,7 @@ export async function renderReport(v: Verdict, opts: ReportOptions): Promise<str
   out.push(`<p class="meta">${meta.join(' · ')}</p>`);
   if (v.task) out.push(`<div class="task"><b>Task</b><br>${esc(v.task)}</div>`);
   out.push('<div class="cards">');
-  out.push(`<div class="card"><b>${blocks.length}</b><span>blocking</span></div><div class="card"><b>${warns.length}</b><span>warnings</span></div>${lifted.length ? `<div class="card"><b>${lifted.length}</b><span>lifted by override</span></div>` : ''}`);
+  out.push(`<div class="card"><b>${blocks.length}</b><span>blocking</span></div><div class="card"><b>${warns.length}</b><span>warnings</span></div>${suggestions.length ? `<div class="card sugg"><b>${suggestions.length}</b><span>suggestions</span></div>` : ''}${lifted.length ? `<div class="card"><b>${lifted.length}</b><span>lifted by override</span></div>` : ''}`);
   out.push(`<div class="card"><b>${ti.examined.length}</b><span>test files examined</span></div><div class="card"><b>${ti.changedSourceFiles.length}</b><span>source files changed</span></div>`);
   for (const [fam, n] of byFamily) out.push(`<div class="card"><b>${n}</b><span>${esc(fam)}</span></div>`);
   out.push('</div>');
@@ -269,13 +274,18 @@ export async function renderReport(v: Verdict, opts: ReportOptions): Promise<str
     if (jg.raw) out.push(`<details><summary>raw model output</summary><pre>${esc(jg.raw)}</pre></details>`);
   }
 
-  const section = (title: string, list: Finding[], isLifted: boolean) => {
+  const section = (title: string, list: Finding[], isLifted: boolean, sugg = false) => {
     out.push(`<h2>${esc(title)} (${list.length})</h2>`);
     if (list.length === 0) { out.push('<p class="empty">none</p>'); return; }
-    for (const f of list) out.push(findingHtml(f, pairs.get(f) ?? null, isLifted));
+    for (const f of list) out.push(findingHtml(f, pairs.get(f) ?? null, isLifted, sugg));
   };
   section(strictBlock ? 'Blocking (warnings, strict mode)' : 'Blocking', blocks, false);
   section('Warnings', warns, false);
+  if (suggestions.length) {
+    out.push('<h2 class="sugg-h">Suggestions from the model-backed review</h2>');
+    out.push('<p class="meta">A model read the diff with the task in hand. These did not decide the verdict and cannot: the gate is the deterministic findings above.</p>');
+    for (const f of suggestions) out.push(findingHtml(f, pairs.get(f) ?? null, false, true));
+  }
   if (lifted.length) section('Lifted by override', lifted, true);
   if (v.overrides?.length) {
     out.push('<h2>Overrides</h2><table class="plain"><tr><th>rule</th><th>granted by</th><th>source</th><th>reason</th></tr>');

@@ -18,7 +18,14 @@ What it adds, all at `warn` by default:
 - `judge-special-casing`: an implementation that hardcodes expected values, branches on test inputs, or overloads operators to satisfy assertions. This is the gap the original-tests run cannot close.
 - `judge-task-mismatch`: a diff that does something other than the task, or leaves it undone while the final message claims completion.
 - `judge-review-manipulation`: text in the diff written for the reviewer or a model rather than the program: a comment saying the change is approved, asking for no findings, or trying to close the diff element. The prompt treats such text as data; this rule makes the attempt itself visible.
-- A one-line triage on every blocking finding, `consistent with the task` or `looks like evasion`, with a reason. The block stands either way; the annotation is for the human. `"canBlock": true` turns the judge's own warnings into blocks.
+- A one-line triage on every blocking finding, `consistent with the task` or `looks like evasion`, with a reason. The block stands either way; the annotation is for the human.
+
+**The judge is advisory by default, and that is deliberate.** Its findings are warnings: they are collected under
+*Suggestions from the model-backed review* in `gatekeep report`, they are reported to you, and they do not stop the
+agent. A model that can block a merge needs its own false-positive budget measured over the same corpora as the
+rules, and it does not have one yet. On Impossible-LiveCodeBench it flagged every one of the 55 cheats and none of
+the 147 honest declines (see [replay.md](replay.md)), which is the evidence for turning it up — `"canBlock": true`
+promotes its warnings to blocks — but the default stays advisory until that holds on a second corpus.
 
 How it is kept honest:
 
