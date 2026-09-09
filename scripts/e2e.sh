@@ -13,6 +13,8 @@ pass=0; fail=0
 # in-place sed that works with both BSD (macOS) and GNU sed
 sedi() { if sed --version >/dev/null 2>&1; then sed -i "$@"; else sed -i '' "$@"; fi; }
 check() { if eval "$2"; then pass=$((pass+1)); echo "  ok   $1"; else fail=$((fail+1)); echo "  FAIL $1"; fi; }
+# A blocking stop is exit 0 with {"decision":"block"} on stdout; $1 is that stdout.
+blocked() { [ $code -eq 0 ] && echo "$1" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.exit(JSON.parse(d).decision==="block"?0:1)}catch{process.exit(1)}})'; }
 hook() { echo "$2" | node "$CLI" hook "$1" --harness claude-code; }
 
 R="$E2E/repo"; mkdir -p "$R/app" "$R/tests"; cd "$R"; git init -q -b main
@@ -61,10 +63,11 @@ check "clean stop: exit 0 and silent" '[ $code -eq 0 ] && [ -z "$out" ]'
 echo "== agent edits the gate config: blocked, and config comes from the snapshot"
 echo '{"maxBlocks": 99, "rules": {"test-deleted": "off"}}' > gatekeep.config.json
 sedi '/def test_add_zero/,$d' tests/test_calc.py
-err=$(hook stop '{"session_id":"s1","cwd":"'"$R"'"}' 2>&1 >/dev/null); code=$?
-check "stop blocks (exit 2)" '[ $code -eq 2 ]'
-check "reports gate-config-changed" 'echo "$err" | grep -q gate-config-changed'
-check "reports test-deleted despite the agent turning it off" 'echo "$err" | grep -q "test-deleted"'
+out=$(hook stop '{"session_id":"s1","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check "stop blocks: exit 0 with decision=block JSON on stdout" '[ $code -eq 0 ] && echo "$out" | node -e "const j=JSON.parse(require(\"fs\").readFileSync(0,\"utf8\"));process.exit(j.decision===\"block\"&&typeof j.reason===\"string\"&&typeof j.systemMessage===\"string\"?0:1)"'
+check "the block reason is the agent-facing report" 'echo "$out" | node -e "const j=JSON.parse(require(\"fs\").readFileSync(0,\"utf8\"));process.exit(/GATEKEEP BLOCKED/.test(j.reason)&&/You may not finish yet/.test(j.reason)?0:1)"'
+check "reports gate-config-changed" 'echo "$out" | grep -q gate-config-changed'
+check "reports test-deleted despite the agent turning it off" 'echo "$out" | grep -q "test-deleted"'
 out=$(hook stop '{"session_id":"s1","cwd":"'"$R"'","stop_hook_active":true}' 2>/dev/null); code=$?
 check "block limit (from snapshot config, maxBlocks=1) reached: exit 0" '[ $code -eq 0 ]'
 check "findings handed to the human via systemMessage JSON" 'echo "$out" | node -e "const j=JSON.parse(require(\"fs\").readFileSync(0,\"utf8\"));process.exit(/block limit/.test(j.systemMessage)&&/test-deleted/.test(j.systemMessage)?0:1)"'
@@ -122,28 +125,28 @@ hook session-start '{"session_id":"s3","cwd":"'"$R"'","source":"startup"}' >/dev
 mkdir -p .claude && echo '{"hooks":{"Stop":[]}}' > .claude/settings.local.json && echo '.claude/settings.local.json' >> .git/info/exclude
 hook session-start '{"session_id":"s4","cwd":"'"$R"'","source":"startup"}' >/dev/null
 echo '{"hooks":{}}' > .claude/settings.local.json
-err=$(hook stop '{"session_id":"s4","cwd":"'"$R"'"}' 2>&1 >/dev/null); code=$?
-check "editing a gitignored settings.local.json blocks (hashed from disk)" '[ $code -eq 2 ] && echo "$err" | grep -q gate-config-changed'
+err=$(hook stop '{"session_id":"s4","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check "editing a gitignored settings.local.json blocks (hashed from disk)" 'blocked "$err" && echo "$err" | grep -q gate-config-changed'
 rm -rf .claude; sedi '/settings.local.json/d' .git/info/exclude
 hook session-start '{"session_id":"s5","cwd":"'"$R"'","source":"startup"}' >/dev/null
 sedi '/def test_add_zero/,$d' tests/test_calc.py; git add -A; git commit -qm "agent commits tampering"
 rm -rf "$GATEKEEP_HOME"
-err=$(hook stop '{"session_id":"s5","cwd":"'"$R"'"}' 2>&1 >/dev/null); code=$?
-check "wiping GATEKEEP_HOME after committing tampering: baseline recovered from .git mirror, still blocked" '[ $code -eq 2 ] && echo "$err" | grep -q test-deleted && echo "$err" | grep -q session-state-missing'
+err=$(hook stop '{"session_id":"s5","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check "wiping GATEKEEP_HOME after committing tampering: baseline recovered from .git mirror, still blocked" 'blocked "$err" && echo "$err" | grep -q test-deleted && echo "$err" | grep -q session-state-missing'
 git reset -q --hard HEAD~1
 echo "== no config at session start: agent-written config is ignored"
 git rm -q --cached gatekeep.config.json && rm gatekeep.config.json && git commit -qm "no config"
 hook session-start '{"session_id":"s6","cwd":"'"$R"'","source":"startup"}' >/dev/null
 sedi '/def test_add_zero/,$d' tests/test_calc.py
 echo '{"rules":{"test-deleted":"off","gate-config-changed":"off"}}' > gatekeep.config.json
-err=$(hook stop '{"session_id":"s6","cwd":"'"$R"'"}' 2>&1 >/dev/null); code=$?
-check "config written mid-session is not honored" '[ $code -eq 2 ] && echo "$err" | grep -q test-deleted'
+err=$(hook stop '{"session_id":"s6","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check "config written mid-session is not honored" 'blocked "$err" && echo "$err" | grep -q test-deleted'
 git checkout -q . && rm -f gatekeep.config.json && git reset -q --hard HEAD~1
 echo "== concurrent stops share one counter"
 hook session-start '{"session_id":"s7","cwd":"'"$R"'","source":"startup"}' >/dev/null
 sedi '/def test_add_zero/,$d' tests/test_calc.py
-rm -f /tmp/gk_codes; for i in 1 2 3 4 5 6; do (hook stop '{"session_id":"s7","cwd":"'"$R"'"}' >/dev/null 2>&1; echo $? >> /tmp/gk_codes) & done; wait
-blocked=$(grep -c '^2$' /tmp/gk_codes); blocks=$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).blocks)" "$(ls "$GATEKEEP_HOME"/repos/*/sessions/s7.json)")
+rm -f /tmp/gk_codes; for i in 1 2 3 4 5 6; do (o=$(hook stop '{"session_id":"s7","cwd":"'"$R"'"}' 2>/dev/null); echo "$o" | grep -q '"decision":"block"' && echo blocked >> /tmp/gk_codes) & done; wait
+blocked=$(grep -c '^blocked$' /tmp/gk_codes 2>/dev/null || echo 0); blocks=$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).blocks)" "$(ls "$GATEKEEP_HOME"/repos/*/sessions/s7.json)")
 check "6 concurrent stops serialized: exactly maxBlocks(1) blocked (blocked=$blocked, counter=$blocks)" '[ "$blocked" = "1" ] && [ "$blocks" = "1" ]'
 git checkout -q .
 echo "== run without a session: human config edits are not tampering"
@@ -160,19 +163,19 @@ echo '{"testCommand": "python3 -m unittest discover -s tests -t . 2>&1"}' > gate
 git add -A && git commit -qm base
 hook session-start '{"session_id":"t1","cwd":"'"$T"'","source":"startup"}' >/dev/null
 printf 'def add(a, b):\n    return a * b\n' > app/calc.py
-out=$(hook stop '{"session_id":"t1","cwd":"'"$T"'"}' 2>&1 >/dev/null); code=$?
+out=$(hook stop '{"session_id":"t1","cwd":"'"$T"'"}' 2>/dev/null); code=$?
 check "source broken, tests untouched: warn tests-failing, no block" '[ $code -eq 0 ]'
 node "$CLI" run --json > /tmp/gk_out 2>&1; grep -q '"tests-failing"' /tmp/gk_out && grep -q '"status": "fail"' /tmp/gk_out; check "run --json reports tests-failing with originalTests status fail" '[ $? -eq 0 ]'
 printf 'import unittest\nfrom app.calc import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 3), 6)\n' > tests/test_calc.py
-err=$(hook stop '{"session_id":"t1","cwd":"'"$T"'"}' 2>&1 >/dev/null); code=$?
-check "source broken + test edited to match: blocked by original-tests-fail" '[ $code -eq 2 ] && echo "$err" | grep -q original-tests-fail'
+err=$(hook stop '{"session_id":"t1","cwd":"'"$T"'"}' 2>/dev/null); code=$?
+check "source broken + test edited to match: blocked by original-tests-fail" 'blocked "$err" && echo "$err" | grep -q original-tests-fail'
 check "report shows the original run and the edited run" 'echo "$err" | grep -q "edited tests exit 0"'
 git checkout -q . && printf 'def add(a, b):\n    return a + b + 0\n' > app/calc.py
 out=$(hook stop '{"session_id":"t1","cwd":"'"$T"'"}' 2>&1); code=$?
 check "honest fix: original tests pass, silent" '[ $code -eq 0 ] && [ -z "$out" ]'
 git checkout -q .; rm tests/test_calc.py; printf 'def add(a, b):\n    return a * b\n' > app/calc.py
-err=$(hook stop '{"session_id":"t1","cwd":"'"$T"'"}' 2>&1 >/dev/null); code=$?
-check "deleted test file is restored for the run: test-file-deleted plus a failing original suite" '[ $code -eq 2 ] && echo "$err" | grep -q test-file-deleted && echo "$err" | grep -qE "original-tests-fail|tests-failing"'
+err=$(hook stop '{"session_id":"t1","cwd":"'"$T"'"}' 2>/dev/null); code=$?
+check "deleted test file is restored for the run: test-file-deleted plus a failing original suite" 'blocked "$err" && echo "$err" | grep -q test-file-deleted && echo "$err" | grep -qE "original-tests-fail|tests-failing"'
 git checkout -q .
 echo '{"testCommand": "sleep 30"}' > gatekeep.config.json && git commit -qam "slow" >/dev/null
 J="$E2E/testrun-js"; rm -rf "$J"; mkdir -p "$J/src" "$J/tests"; pushd "$J" >/dev/null; git init -q -b main
@@ -203,8 +206,8 @@ lines = [L("user", [{"type": "text", "text": "fix add"}]),
          L("assistant", [{"type": "text", "text": "Done. All tests pass. I changed app/calc.py and app/util.py."}])]
 open(sys.argv[1], "w").write("\n".join(lines) + "\n")
 PY
-err=$(hook stop '{"session_id":"c1","cwd":"'"$R"'","transcript_path":"'"$TR"'"}' 2>&1 >/dev/null); code=$?
-check "history rewrite in transcript blocks" '[ $code -eq 2 ] && echo "$err" | grep -q history-rewritten'
+err=$(hook stop '{"session_id":"c1","cwd":"'"$R"'","transcript_path":"'"$TR"'"}' 2>/dev/null); code=$?
+check "history rewrite in transcript blocks" 'blocked "$err" && echo "$err" | grep -q history-rewritten'
 check "stale tests-pass claim and ghost file reported" 'echo "$err" | grep -q claim-tests-unverified && echo "$err" | grep -q "did not change: app/util.py"'
 # The transcript file is written asynchronously, so the harness passes the final message directly; it wins.
 sedi 's/Done. All tests pass. I changed app\/calc.py and app\/util.py./Done./' "$TR"
@@ -226,8 +229,8 @@ hook session-start '{"session_id":"o2","cwd":"'"$R"'","source":"startup"}' >/dev
 sedi '/def test_add_zero/,$d' tests/test_calc.py; git commit -qam "drop test
 
 gatekeep: allow test-deleted -- (written by the agent)"
-err=$(hook stop '{"session_id":"o2","cwd":"'"$R"'"}' 2>&1 >/dev/null); code=$?
-check "agent-written commit trailer does not lift anything in a session" '[ $code -eq 2 ] && echo "$err" | grep -q test-deleted'
+err=$(hook stop '{"session_id":"o2","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check "agent-written commit trailer does not lift anything in a session" 'blocked "$err" && echo "$err" | grep -q test-deleted'
 node "$CLI" run --base HEAD~1 >/tmp/gk_out 2>&1; code=$?
 check "run --base honors the commit trailer and names the author" '[ $code -eq 0 ] && grep -q "lifted by t <t@t> via commit" /tmp/gk_out'
 node "$CLI" run --base HEAD~1 --allow gate-config-changed >/tmp/gk_out 2>&1
@@ -236,8 +239,8 @@ echo '{"maxBlocks": 1, "rules": {}}' > gatekeep.config.json
 hook session-start '{"session_id":"o3","cwd":"'"$R"'","source":"startup"}' >/dev/null
 hook prompt '{"session_id":"o3","cwd":"'"$R"'","prompt":"gatekeep: allow gate-config-changed"}' >/dev/null
 echo '{"maxBlocks": 9}' > gatekeep.config.json
-err=$(hook stop '{"session_id":"o3","cwd":"'"$R"'"}' 2>&1 >/dev/null); code=$?
-check "gate-config-changed cannot be lifted even by the human" '[ $code -eq 2 ] && echo "$err" | grep -q gate-config-changed'
+err=$(hook stop '{"session_id":"o3","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check "gate-config-changed cannot be lifted even by the human" 'blocked "$err" && echo "$err" | grep -q gate-config-changed'
 git checkout -q .
 
 echo "== framework-agnostic adapter: session start + verify"

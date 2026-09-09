@@ -330,15 +330,21 @@ async function stopHook(root: string, sessionId: string, harness: string, input:
     const v = buildVerdict({ sessionId, harness, base: s.baseTree, cur, task: s.prompt, findings, result, originalTests, judge, strict: cfg.strict, blockCount: s.blocks + (decision === 'block' && !overLimit ? 1 : 0), t0, overrides: overridesFromPrompts(s.prompts ?? (s.prompt ? [s.prompt] : [])) });
     const vp = await writeVerdict(root, v);
     s.lastVerdict = vp;
+    // One mechanism for both outcomes: exit 0 with JSON on stdout. `decision: "block"` is the documented Stop-hook
+    // field and feeds `reason` back to the agent as its next instruction; `systemMessage` is what reaches the human.
+    // Exit 2 with stderr blocks too, but cannot carry a message to the user in the same breath.
     if (decision === 'block' && !overLimit) {
       s.blocks += 1;
       await saveSession(root, s, gd);
-      console.error(formatReport(v, { forAgent: true, verdictPath: vp }));
-      return 2; // exit 2 = block; stderr is fed back to the agent
+      console.log(JSON.stringify({
+        decision: 'block',
+        reason: formatReport(v, { forAgent: true, verdictPath: vp }),
+        systemMessage: `gatekeep blocked this stop (block ${s.blocks} of ${cfg.maxBlocks}); see ${vp}`,
+      }));
+      return 0;
     }
     await saveSession(root, s, gd);
     if (decision !== 'pass') {
-      // Stop-hook stdout is discarded on exit 0; the documented channel to reach the human is a systemMessage.
       const note = overLimit ? `gatekeep: block limit (${cfg.maxBlocks}) reached; the agent was allowed to finish. Review these findings before merging.\n` : '';
       console.log(JSON.stringify({ systemMessage: note + formatReport(v, { forAgent: false, verdictPath: vp }) }));
     }
