@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { analyze, needsContent, PROTECTED_FILES, type AnalysisResult } from './rules.js';
 import { parseConfig, readConfigText, defaultConfigText, CONFIG_FILENAME, type GatekeepConfig } from './config.js';
-import { repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees, catFile, lsTree, BlobBatch, GitError } from './git.js';
+import { repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees, catFile, lsTree, BlobBatch, GitError, type SnapshotProblems } from './git.js';
 import { langFor } from './lang.js';
 import { loadSession, loadSessionChecked, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, type SessionState } from './session.js';
 import { decide, writeVerdict, formatReport, type Verdict } from './verdict.js';
@@ -18,7 +18,7 @@ import { isTestFile } from './rules.js';
 import { runJudge, type JudgeResult } from './judge.js';
 import { renderReport } from './report.js';
 import { spawn } from 'node:child_process';
-import type { Finding, FileChange } from './model.js';
+import type { Finding, FileChange, Severity } from './model.js';
 
 const require = createRequire(import.meta.url);
 const VERSION: string = (require('../../package.json') as { version: string }).version;
@@ -130,11 +130,20 @@ async function baseTestFiles(root: string, base: string, cfg: GatekeepConfig, ch
 }
 
 async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sessionMode: boolean, transcriptPath?: string, task?: string | null, finalText?: string): Promise<Analysis> {
-  const cur = await snapshotWorkingTree(root);
+  const snapshot: SnapshotProblems = { indexFlags: [], hidden: [] };
+  const cur = await snapshotWorkingTree(root, snapshot);
   const changes = await diffTrees(root, base, cur, { shouldLoad: (p) => needsContent(p, cfg.rules), maxBytes: 2 * 1024 * 1024 });
   const result = await analyze(changes, cfg.rules, { exists: (p) => existsSync(path.join(root, p)), sessionMode, task, baseTestFiles: await baseTestFiles(root, base, cfg, changes) });
   const originalTests = base === cur ? null : await runOriginalTests(root, base, cur, changes, cfg.rules, { testCommand: cfg.testCommand, testTimeoutMs: cfg.testTimeoutMs });
   result.findings.push(...testRunFindings(originalTests, cfg.rules.severities));
+  // Both of these keep files out of `git add -A`, and neither lives in the tree, so no diff can show them changing.
+  const snapSev = (rule: string): Severity => cfg.rules.severities[rule] ?? 'block';
+  if (snapshot.indexFlags.length && snapSev('index-flags-set') !== 'off') {
+    result.findings.push({ rule: 'index-flags-set', severity: snapSev('index-flags-set'), file: snapshot.indexFlags[0]!, message: `${snapshot.indexFlags.length} path(s) carry skip-worktree or assume-unchanged, which keeps their edits out of \`git add\`: ${snapshot.indexFlags.slice(0, 5).join(', ')}. The snapshot cleared the bits and read the files anyway.` });
+  }
+  if (snapshot.hidden.length && snapSev('paths-hidden-from-snapshot') !== 'off') {
+    result.findings.push({ rule: 'paths-hidden-from-snapshot', severity: snapSev('paths-hidden-from-snapshot'), file: snapshot.hidden[0]!, message: `${snapshot.hidden.length} untracked path(s) are hidden by .git/info/exclude or core.excludesFile rather than by a committed .gitignore: ${snapshot.hidden.slice(0, 5).join(', ')}` });
+  }
   // The transcript file is written asynchronously and can be missing the turn that triggered this hook, so when the
   // harness hands us the final message directly, that is the authoritative text for the claim rules.
   const read = transcriptPath ? await readTranscript(transcriptPath) : null;

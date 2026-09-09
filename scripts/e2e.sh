@@ -170,6 +170,26 @@ echo '{"rules":{"test-deleted":"off","gate-config-changed":"off"}}' > gatekeep.c
 err=$(hook stop '{"session_id":"s6","cwd":"'"$R"'"}' 2>/dev/null); code=$?
 check "config written mid-session is not honored" 'blocked "$err" && echo "$err" | grep -q test-deleted'
 git checkout -q . && rm -f gatekeep.config.json && git reset -q --hard HEAD~1
+echo "== the index and local excludes cannot hide a change from the snapshot"
+hook session-start '{"session_id":"s8","cwd":"'"$R"'","source":"startup"}' >/dev/null
+sedi '/def test_add_zero/,$d' tests/test_calc.py
+git update-index --skip-worktree tests/test_calc.py
+err=$(hook stop '{"session_id":"s8","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check "skip-worktree hides nothing: index-flags-set plus the real finding" 'blocked "$err" && echo "$err" | grep -q index-flags-set && echo "$err" | grep -q test-deleted'
+check "the developer's own index keeps its flag" 'git ls-files -v tests/test_calc.py | grep -q "^S"'
+git update-index --no-skip-worktree tests/test_calc.py; git checkout -q .
+hook session-start '{"session_id":"s9","cwd":"'"$R"'","source":"startup"}' >/dev/null
+printf 'def test_new():\n    assert add(1, 1) == 2\n' > tests/test_extra.py
+echo 'tests/test_extra.py' >> .git/info/exclude
+err=$(hook stop '{"session_id":"s9","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check ".git/info/exclude hides nothing: paths-hidden-from-snapshot" 'blocked "$err" && echo "$err" | grep -q paths-hidden-from-snapshot && echo "$err" | grep -q tests/test_extra.py'
+sedi '/test_extra/d' .git/info/exclude; rm -f tests/test_extra.py
+echo 'build/' > .gitignore && mkdir -p build && echo x > build/out.o && git add .gitignore && git commit -qm gitignore
+hook session-start '{"session_id":"s10","cwd":"'"$R"'","source":"startup"}' >/dev/null
+out=$(hook stop '{"session_id":"s10","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check "a committed .gitignore over build output is not hiding anything" '[ $code -eq 0 ] && ! echo "$out" | grep -q paths-hidden-from-snapshot'
+rm -rf build .gitignore; git rm -q --cached .gitignore 2>/dev/null; git checkout -q .; git reset -q --hard HEAD~1
+
 echo "== concurrent stops share one counter"
 hook session-start '{"session_id":"s7","cwd":"'"$R"'","source":"startup"}' >/dev/null
 sedi '/def test_add_zero/,$d' tests/test_calc.py

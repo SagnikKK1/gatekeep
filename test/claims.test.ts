@@ -62,6 +62,16 @@ test('history rewriting, exclude writes and unrestored stashes block', () => {
   assert.ok(out.every((f) => f.severity === 'block'));
   const restored = [line('user', [text('go')]), line('assistant', [bash('git stash')]), line('user', [result()]), line('assistant', [bash('git stash pop')]), line('user', [result()]), line('assistant', [text('Done.')])];
   assert.deepEqual(run(restored), []);
+  // Commands that move what the snapshot can see, rather than what history says.
+  for (const cmd of ['git update-index --skip-worktree tests/test_calc.py', 'git sparse-checkout set app', 'git worktree add ../wt', 'git checkout --orphan clean', 'git symbolic-ref HEAD refs/heads/other', 'git gc --prune=now', 'git notes add -m x']) {
+    const t2 = [line('user', [text('go')]), line('assistant', [bash(cmd)]), line('user', [result()]), line('assistant', [text('Done.')])];
+    assert.equal(claimFindings(parseTranscript(t2.join('\n')), changes, {}, isTest).filter((f) => f.rule === 'history-rewritten').length, 1, cmd);
+  }
+  // Ordinary reads of the same subcommands are not rewrites.
+  for (const cmd of ['git notes list', 'git worktree list']) {
+    const t3 = [line('user', [text('go')]), line('assistant', [bash(cmd)]), line('user', [result()]), line('assistant', [text('Done.')])];
+    assert.deepEqual(claimFindings(parseTranscript(t3.join('\n')), changes, {}, isTest).filter((f) => f.rule === 'history-rewritten'), [], cmd);
+  }
 });
 
 test('sidechain lines and unknown formats are ignored; a human turn resets the final message', () => {

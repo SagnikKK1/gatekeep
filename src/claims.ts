@@ -40,7 +40,7 @@ const BUILD_CLAIM = /\b(the )?(build|compilation) (is |now )?(clean|passes|succe
 const LINT_CLAIM = /\b(lint|linter|linting) (is |now )?(clean|passes|pass|happy)\b|\bno lint(ing)? (errors|warnings|issues)\b|\blint-free\b|\bpasses lint\b/i;
 const TYPE_CLAIM = /\b(type ?checks?|typecheck(ing)?|mypy|pyright|tsc) (is |now |all )?(pass|passes|clean|happy|green)\b|\bno type errors\b|\btypes? check out\b/i;
 
-const HISTORY_CMD = /\bgit\s+(commit\s+[^\n]*--amend|push\s+[^\n]*(--force|-f\b|--force-with-lease)|rebase\b|reset\s+--hard|filter-branch|filter-repo|update-ref|reflog\s+(expire|delete)|replace\b)/;
+const HISTORY_CMD = /\bgit\s+(commit\s+[^\n]*--amend|push\s+[^\n]*(--force|-f\b|--force-with-lease)|rebase\b|reset\s+--hard|filter-branch|filter-repo|update-ref|reflog\s+(expire|delete)|replace\b|update-index\b|sparse-checkout\b|worktree\s+add\b|checkout\s+[^\n]*--orphan|symbolic-ref\b|gc\s+[^\n]*--prune|notes\s+(add|append|edit|copy|remove|prune)\b)/;
 const EXCLUDE_WRITE = /\.git\/info\/exclude|core\.excludesFile|excludesfile/i;
 const STASH_CMD = /\bgit\s+stash\b(?!\s+(pop|apply|list|show|drop))/;
 const STASH_RESTORE = /\bgit\s+stash\s+(pop|apply)\b/;

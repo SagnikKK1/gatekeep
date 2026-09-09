@@ -7,6 +7,8 @@ Part of [gatekeep](../README.md): every rule and its default severity.
 | `gate-config-changed` | block | `gatekeep.config.json` or `.claude/settings*.json` changed during the session (session mode only; a human running `gatekeep run` may edit them) |
 | `session-state-missing` | warn | No baseline was found at stop, or it had to be recovered from the `.git` mirror. Blocks, and cannot be turned off, when a baseline exists but no copy of it verifies |
 | `state-tampered` | block | A stored copy of the session state failed its signature check and was ignored. Both copies are signed with a key kept under the state home, so editing the `.git/gatekeep` mirror is a finding rather than a silent baseline rewrite |
+| `index-flags-set` | block | A path carries `skip-worktree` or `assume-unchanged`, which keeps its edits out of `git add`. The snapshot clears the bit in its own throwaway index and reads the file anyway |
+| `paths-hidden-from-snapshot` | block | An untracked path is hidden by `.git/info/exclude` or `core.excludesFile` rather than by a committed `.gitignore`. Neither file is in the diff, so a change there cannot be reviewed |
 | `original-tests-fail` | block | With `testCommand` set: the session's original tests fail on the current code while the edited tests pass |
 | `tests-failing` | warn | With `testCommand` set: the suite fails with the original tests and with the edited ones |
 | `test-file-deleted` | block | A test file with tests in it is removed and its tests do not reappear elsewhere |

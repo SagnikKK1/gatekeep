@@ -46,7 +46,51 @@ export async function resolveTree(cwd: string, ref: string): Promise<string> {
  * Snapshot the working tree (tracked + untracked, honoring .gitignore) as a tree object without touching the index.
  * Starts from a copy of the real index so git can reuse stat data instead of re-hashing every file.
  */
-export async function snapshotWorkingTree(cwd: string): Promise<string> {
+/** What the snapshot had to work around: reported by the caller as findings, since each one hides changes from the diff. */
+export interface SnapshotProblems {
+  /** Paths carrying skip-worktree or assume-unchanged, which make `git add -A` ignore their edits. Cleared for the snapshot. */
+  indexFlags: string[];
+  /** Untracked paths hidden by `.git/info/exclude` or `core.excludesFile` rather than by a committed `.gitignore`. */
+  hidden: string[];
+}
+
+/**
+ * Index bits that tell git to ignore a file's contents. `git ls-files -v` prefixes each path with a status letter:
+ * `S` is skip-worktree and any lowercase letter is assume-unchanged. Either one makes `git add -A` skip the file, so
+ * an agent can edit a test and keep it out of the snapshot entirely.
+ */
+async function clearIndexFlags(cwd: string, env: NodeJS.ProcessEnv): Promise<string[]> {
+  let out: string;
+  try { out = await git(cwd, ['ls-files', '-v'], env); } catch { return []; }
+  const flagged: string[] = [];
+  for (const line of out.split('\n')) {
+    if (!line) continue;
+    const tag = line[0]!;
+    if (tag === 'S' || (tag >= 'a' && tag <= 'z')) flagged.push(line.slice(2));
+  }
+  if (flagged.length === 0) return [];
+  // Cleared in the throwaway index only; the developer's real index keeps whatever they set.
+  for (const args of [['update-index', '--no-skip-worktree', '--'], ['update-index', '--no-assume-unchanged', '--']]) {
+    try { await git(cwd, [...args, ...flagged], env); } catch { /* one of the two always applies */ }
+  }
+  return flagged;
+}
+
+/**
+ * Untracked paths that `.git/info/exclude` or `core.excludesFile` hide but a committed `.gitignore` does not.
+ * Those two live outside the tree, so no diff can show them being edited, and both keep files out of `git add -A`.
+ */
+async function hiddenByLocalExcludes(cwd: string): Promise<string[]> {
+  const list = async (args: string[]): Promise<Set<string>> => {
+    try { return new Set((await git(cwd, args, NO_INDEX)).split('\0').filter(Boolean)); } catch { return new Set(); }
+  };
+  const gitignoreOnly = await list(['ls-files', '--others', '-z', '--exclude-per-directory=.gitignore']);
+  if (gitignoreOnly.size === 0) return [];
+  const standard = await list(['ls-files', '--others', '-z', '--exclude-standard']);
+  return [...gitignoreOnly].filter((p) => !standard.has(p)).sort();
+}
+
+export async function snapshotWorkingTree(cwd: string, problems?: SnapshotProblems): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gatekeep-idx-'));
   const idx = path.join(dir, 'index');
   const env = { GIT_INDEX_FILE: idx };
@@ -62,6 +106,10 @@ export async function snapshotWorkingTree(cwd: string): Promise<string> {
       seeded = true;
     } catch { /* no index yet */ }
     if (!seeded) { try { await git(cwd, ['read-tree', 'HEAD'], env); } catch { /* no HEAD yet */ } }
+    if (problems) {
+      problems.indexFlags = await clearIndexFlags(cwd, env);
+      problems.hidden = await hiddenByLocalExcludes(cwd);
+    }
     const addAll = async () => { try { await git(cwd, ['add', '-A', '--sparse', '--', '.'], env); } catch { await git(cwd, ['add', '-A', '--', '.'], env); } }; // older git without --sparse
     try { await addAll(); }
     catch (e) {

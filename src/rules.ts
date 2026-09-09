@@ -28,6 +28,8 @@ export const DEFAULT_SEVERITIES: Record<string, Severity> = {
   'config-invalid': 'warn',
   'session-state-missing': 'warn',
   'state-tampered': 'block',
+  'index-flags-set': 'block',
+  'paths-hidden-from-snapshot': 'block',
   'original-tests-fail': 'block',
   'tests-failing': 'warn',
   'test-run-timeout': 'warn',
