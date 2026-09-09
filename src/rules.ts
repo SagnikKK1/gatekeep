@@ -27,6 +27,7 @@ export const DEFAULT_SEVERITIES: Record<string, Severity> = {
   'gate-config-changed': 'block',
   'config-invalid': 'warn',
   'session-state-missing': 'warn',
+  'state-tampered': 'block',
   'original-tests-fail': 'block',
   'tests-failing': 'warn',
   'test-run-timeout': 'warn',

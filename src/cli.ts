@@ -8,7 +8,7 @@ import { analyze, needsContent, PROTECTED_FILES, type AnalysisResult } from './r
 import { parseConfig, readConfigText, defaultConfigText, CONFIG_FILENAME, type GatekeepConfig } from './config.js';
 import { repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees, catFile, lsTree, BlobBatch, GitError } from './git.js';
 import { langFor } from './lang.js';
-import { loadSession, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, type SessionState } from './session.js';
+import { loadSession, loadSessionChecked, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, type SessionState } from './session.js';
 import { decide, writeVerdict, formatReport, type Verdict } from './verdict.js';
 import { installClaudeCode, uninstallClaudeCode, installCodex, installedHooks } from './install.js';
 import { runOriginalTests, testRunFindings, type TestRunResult } from './testrun.js';
@@ -297,15 +297,20 @@ async function cmdHook(args: Args, cwd: string): Promise<number> {
 
 async function stopHook(root: string, sessionId: string, harness: string, input: Record<string, unknown>, gd: string | null): Promise<number> {
   {
-    let s = await loadSession(root, sessionId, gd);
+    const loaded = await loadSessionChecked(root, sessionId, gd);
+    let s = loaded.state;
     const stateFindings: Finding[] = [];
     if (!s) {
       // No baseline at all: either the hook was installed mid-session, or the session state was deleted. Fall back to HEAD and say so.
+      // A baseline that exists but verifies against nothing is worse than a missing one, so that case blocks.
       s = await newSession(root, sessionId, harness, await headTree(root), await readConfigText(root), gd);
-      stateFindings.push({ rule: 'session-state-missing', severity: 'warn', file: '.', message: 'No session baseline was found for this session (hook installed mid-session, or the state directory was deleted); compared against HEAD instead. Changes already committed during the session were not checked.' });
-    } else if (s.recovered) {
-      stateFindings.push({ rule: 'session-state-missing', severity: 'warn', file: '.', message: `Session state under ${repoStateDir(root)} was missing; baseline recovered from the .git mirror` });
-      await saveSession(root, s, gd);
+      stateFindings.push(loaded.unverifiable
+        ? { rule: 'session-state-missing', severity: 'block', file: '.', message: `Every stored copy of this session's baseline failed its signature check; nothing about the session can be trusted, so it was compared against HEAD instead. State lives under ${repoStateDir(root)} and in .git/gatekeep.` }
+        : { rule: 'session-state-missing', severity: 'warn', file: '.', message: 'No session baseline was found for this session (hook installed mid-session, or the state directory was deleted); compared against HEAD instead. Changes already committed during the session were not checked.' });
+    } else {
+      if (s.tampered) stateFindings.push({ rule: 'state-tampered', severity: 'block', file: '.', message: `The ${s.tampered === 'mirror' ? '.git/gatekeep mirror' : 'state-home copy'} of this session's baseline failed its signature check and was ignored; the ${s.tampered === 'mirror' ? 'state-home copy' : 'mirror'} was used instead. Session state may not be edited during a session.` });
+      if (s.recovered) stateFindings.push({ rule: 'session-state-missing', severity: 'warn', file: '.', message: `Session state under ${repoStateDir(root)} was missing; baseline recovered from the .git mirror` });
+      if (s.recovered || s.tampered) await saveSession(root, s, gd);
     }
     const t0 = Date.now();
     const { cfg, findings: cfgFindings } = await configFor(root, null, s);
@@ -321,7 +326,13 @@ async function stopHook(root: string, sessionId: string, harness: string, input:
         }
       }
     }
-    const findings = [...stateFindings.filter(() => (cfg.rules.severities['session-state-missing'] ?? 'warn') !== 'off').map((f) => ({ ...f, severity: cfg.rules.severities['session-state-missing'] ?? 'warn' })), ...cfgFindings, ...result.findings];
+    const stateSev = (f: Finding): Finding | null => {
+      const sev = cfg.rules.severities[f.rule] ?? f.severity;
+      // A configured severity may lower session-state-missing, but not the unverifiable case: that one is tampering.
+      if (sev === 'off') return f.rule === 'session-state-missing' && f.severity === 'block' ? f : null;
+      return { ...f, severity: f.severity === 'block' ? 'block' : sev };
+    };
+    const findings = [...stateFindings.map(stateSev).filter((f): f is Finding => f !== null), ...cfgFindings, ...result.findings];
     const judge = await judgeStep(root, s.baseTree, a, cfg, s.prompt, findings, {});
     applyOverrides(findings, overridesFromPrompts(s.prompts ?? (s.prompt ? [s.prompt] : [])));
     const decision = decide(findings, cfg.strict);

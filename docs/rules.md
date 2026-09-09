@@ -5,7 +5,8 @@ Part of [gatekeep](../README.md): every rule and its default severity.
 | Rule | Default | Fires when |
 |---|---|---|
 | `gate-config-changed` | block | `gatekeep.config.json` or `.claude/settings*.json` changed during the session (session mode only; a human running `gatekeep run` may edit them) |
-| `session-state-missing` | warn | No baseline was found at stop, or it had to be recovered from the `.git` mirror |
+| `session-state-missing` | warn | No baseline was found at stop, or it had to be recovered from the `.git` mirror. Blocks, and cannot be turned off, when a baseline exists but no copy of it verifies |
+| `state-tampered` | block | A stored copy of the session state failed its signature check and was ignored. Both copies are signed with a key kept under the state home, so editing the `.git/gatekeep` mirror is a finding rather than a silent baseline rewrite |
 | `original-tests-fail` | block | With `testCommand` set: the session's original tests fail on the current code while the edited tests pass |
 | `tests-failing` | warn | With `testCommand` set: the suite fails with the original tests and with the edited ones |
 | `test-file-deleted` | block | A test file with tests in it is removed and its tests do not reappear elsewhere |

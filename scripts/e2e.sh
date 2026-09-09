@@ -133,6 +133,34 @@ sedi '/def test_add_zero/,$d' tests/test_calc.py; git add -A; git commit -qm "ag
 rm -rf "$GATEKEEP_HOME"
 err=$(hook stop '{"session_id":"s5","cwd":"'"$R"'"}' 2>/dev/null); code=$?
 check "wiping GATEKEEP_HOME after committing tampering: baseline recovered from .git mirror, still blocked" 'blocked "$err" && echo "$err" | grep -q test-deleted && echo "$err" | grep -q session-state-missing'
+git checkout -q . && git reset -q --hard HEAD~1
+
+echo "== signed session state: the .git mirror is not a free baseline rewrite"
+hook session-start '{"session_id":"s5b","cwd":"'"$R"'","source":"startup"}' >/dev/null
+MIR=".git/gatekeep/sessions/s5b.json"
+check "state is signed in both copies" 'node -e "const f=require(\"fs\");const m=JSON.parse(f.readFileSync(\"'"$MIR"'\",\"utf8\"));const h=JSON.parse(f.readFileSync(f.readdirSync(\"'"$GATEKEEP_HOME"'/repos\").map(d=>\"'"$GATEKEEP_HOME"'/repos/\"+d+\"/sessions/s5b.json\")[0],\"utf8\"));process.exit(/^[0-9a-f]{64}$/.test(m.sig)&&/^[0-9a-f]{64}$/.test(h.sig)?0:1)"'
+check "the key lives outside the repository" '[ -f "$(ls "$GATEKEEP_HOME"/repos/*/hmac.key)" ] && [ ! -e .git/gatekeep/hmac.key ]'
+sedi '/def test_add_zero/,$d' tests/test_calc.py
+# rewrite the mirror's baseline to the current tree: without signing this hides every change
+NOW=$(node "$CLI" run --json 2>/dev/null | node -e "let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>console.log(JSON.parse(d).currentTree))")
+node -e "const f=require('fs');const p='$MIR';const j=JSON.parse(f.readFileSync(p,'utf8'));j.baseTree='$NOW';f.writeFileSync(p,JSON.stringify(j,null,2))"
+err=$(hook stop '{"session_id":"s5b","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check "a rewritten mirror is rejected: state-tampered, and the real findings still land" 'blocked "$err" && echo "$err" | grep -q state-tampered && echo "$err" | grep -q test-deleted'
+git checkout -q .
+# a stripped signature is not a way to opt out of verification (fresh session: one block each)
+hook session-start '{"session_id":"s5c","cwd":"'"$R"'","source":"startup"}' >/dev/null
+sedi '/def test_add_zero/,$d' tests/test_calc.py
+node -e "const f=require('fs');const p='.git/gatekeep/sessions/s5c.json';const j=JSON.parse(f.readFileSync(p,'utf8'));j.blocks=0;delete j.sig;f.writeFileSync(p,JSON.stringify(j,null,2))"
+err=$(hook stop '{"session_id":"s5c","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check "an unsigned mirror is rejected too" 'blocked "$err" && echo "$err" | grep -q state-tampered'
+git checkout -q .
+# both copies unverifiable: no trusted baseline at all
+hook session-start '{"session_id":"s5d","cwd":"'"$R"'","source":"startup"}' >/dev/null
+sedi '/def test_add_zero/,$d' tests/test_calc.py
+node -e "const f=require('fs');const cp=require('child_process');for (const p of ['.git/gatekeep/sessions/s5d.json', cp.execSync('ls \"$GATEKEEP_HOME\"/repos/*/sessions/s5d.json').toString().trim()]) {const j=JSON.parse(f.readFileSync(p,'utf8'));j.sig='0'.repeat(64);f.writeFileSync(p,JSON.stringify(j,null,2));}"
+err=$(hook stop '{"session_id":"s5d","cwd":"'"$R"'"}' 2>/dev/null); code=$?
+check "no verifiable copy: session-state-missing blocks instead of warning" 'blocked "$err" && echo "$err" | grep -q session-state-missing'
+git checkout -q .
 git reset -q --hard HEAD~1
 echo "== no config at session start: agent-written config is ignored"
 git rm -q --cached gatekeep.config.json && rm gatekeep.config.json && git commit -qm "no config"

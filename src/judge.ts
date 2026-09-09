@@ -302,8 +302,9 @@ export async function runJudge(o: RunJudgeOptions): Promise<{ result: JudgeResul
   let response: JudgeResponse | null = null, cached = false;
   if (cacheFile) {
     try {
-      const c = JSON.parse(await fs.readFile(cacheFile, 'utf8')) as { model?: unknown; raw?: unknown; usage?: JudgeResponse['usage'] };
-      if (typeof c.model === 'string' && typeof c.raw === 'string') { response = { model: c.model, raw: c.raw, usage: c.usage }; cached = true; }
+      const c = JSON.parse(await fs.readFile(cacheFile, 'utf8')) as { model?: unknown; raw?: unknown; base?: unknown; cur?: unknown; usage?: JudgeResponse['usage'] };
+      // The tree pair is in the key, but check it in the entry too: a planted cache file cannot answer for a diff it does not name.
+      if (typeof c.model === 'string' && typeof c.raw === 'string' && c.base === o.base && c.cur === o.cur) { response = { model: c.model, raw: c.raw, usage: c.usage }; cached = true; }
     } catch { /* no cache entry */ }
   }
   if (!response) {

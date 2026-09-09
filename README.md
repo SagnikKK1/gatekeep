@@ -53,7 +53,7 @@ State lives in `~/.gatekeep/`, mirrored under the repository's own `.git/gatekee
 
 ## What it checks
 
-63 rules in four deterministic families, plus two opt-in layers:
+64 rules in four deterministic families, plus two opt-in layers:
 
 | Family | Blocks when |
 |---|---|
