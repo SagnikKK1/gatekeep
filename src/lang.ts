@@ -44,6 +44,15 @@ export function globToRegExp(glob: string): RegExp {
   return out;
 }
 
+/**
+ * Directories that sit inside a test tree but hold inputs rather than tests: compiler cases, golden files, table data.
+ * They match the test globs by position and would otherwise be parsed as test files — react alone has 3,630 under
+ * `__tests__/fixtures/`. They stay visible to the source rules; they are just not tests. A conventional
+ * `tests/fixtures/` is deliberately not here: deleting a data file a suite loads is still worth reporting, and the
+ * support-file rule already covers it without treating the file as a test.
+ */
+export const TEST_FIXTURE_GLOBS = ['**/__tests__/fixtures/**', '**/__fixtures__/**', '**/testdata/**'];
+
 export const DEFAULT_TEST_GLOBS = [
   '**/test_*.py', '**/*_test.py', '**/tests/**/*.py', '**/test/**/*.py',
   '**/*.test.{js,jsx,ts,tsx,mjs,cjs,mts,cts}', '**/*.spec.{js,jsx,ts,tsx,mjs,cjs,mts,cts}',

@@ -1,5 +1,5 @@
 import type { FileChange, Finding, Severity, TestCase, TestFileModel, Mock } from './model.js';
-import { langFor, matchesAny, pythonTargetHits, jsTargetHits, jsCandidatePaths, pythonCandidatePaths, mockedSymbol, isCollectedName, DEFAULT_TEST_GLOBS, DEFAULT_TEST_CONFIG_GLOBS } from './lang.js';
+import { TEST_FIXTURE_GLOBS, langFor, matchesAny, pythonTargetHits, jsTargetHits, jsCandidatePaths, pythonCandidatePaths, mockedSymbol, isCollectedName, DEFAULT_TEST_GLOBS, DEFAULT_TEST_CONFIG_GLOBS } from './lang.js';
 import { tokens, ParseTimeout } from './parser.js';
 import { extractPython } from './extract/python.js';
 import { extractJS } from './extract/js.js';
@@ -90,7 +90,7 @@ export const DEFAULT_RULE_CONFIG: RuleConfig = {
 export const PROTECTED_FILES = ['gatekeep.config.json', '.claude/settings.json', '.claude/settings.local.json'];
 
 export function isTestFile(p: string, cfg: RuleConfig): boolean {
-  return !matchesAny(p, cfg.ignoreGlobs) && matchesAny(p, cfg.testGlobs);
+  return !matchesAny(p, cfg.ignoreGlobs) && !matchesAny(p, TEST_FIXTURE_GLOBS) && matchesAny(p, cfg.testGlobs);
 }
 export function isProtectedFile(p: string): boolean {
   return PROTECTED_FILES.some((f) => p === f || p.endsWith('/' + f));
