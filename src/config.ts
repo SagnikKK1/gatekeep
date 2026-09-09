@@ -50,13 +50,14 @@ export function parseConfig(raw: string | null | undefined): { cfg: GatekeepConf
   if (j.judge !== undefined && j.judge !== null && j.judge !== false) {
     if (j.judge && typeof j.judge === 'object' && !Array.isArray(j.judge)) {
       const jj = j.judge as Record<string, unknown>;
-      const jc: JudgeConfig = { model: DEFAULT_JUDGE_MODEL, provider: 'anthropic', maxDiffBytes: 200 * 1024, canBlock: false, effort: 'high' };
+      const jc: JudgeConfig = { model: DEFAULT_JUDGE_MODEL, provider: 'anthropic', apiKeyEnv: 'ANTHROPIC_API_KEY', maxDiffBytes: 200 * 1024, canBlock: false, effort: 'high' };
       if (jj.model !== undefined) { if (typeof jj.model === 'string' && jj.model.trim() !== '') jc.model = jj.model.trim(); else problems.push('"judge.model" must be a non-empty string'); }
+      if (jj.apiKeyEnv !== undefined) { if (typeof jj.apiKeyEnv === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(jj.apiKeyEnv)) jc.apiKeyEnv = jj.apiKeyEnv; else problems.push('"judge.apiKeyEnv" must be an environment variable name'); }
       if (jj.provider !== undefined) { if (typeof jj.provider === 'string' && jj.provider.trim() !== '') jc.provider = jj.provider.trim(); else problems.push('"judge.provider" must be a non-empty string'); }
       if (jj.maxDiffBytes !== undefined) { if (typeof jj.maxDiffBytes === 'number' && jj.maxDiffBytes >= 1024) jc.maxDiffBytes = Math.floor(jj.maxDiffBytes); else problems.push('"judge.maxDiffBytes" must be a number of at least 1024'); }
       if (jj.canBlock !== undefined) { if (typeof jj.canBlock === 'boolean') jc.canBlock = jj.canBlock; else problems.push('"judge.canBlock" must be a boolean'); }
       if (jj.effort !== undefined) { if (typeof jj.effort === 'string' && (JUDGE_EFFORTS as readonly string[]).includes(jj.effort)) jc.effort = jj.effort as JudgeConfig['effort']; else problems.push(`"judge.effort" must be one of ${JUDGE_EFFORTS.join(', ')}`); }
-      for (const k of Object.keys(jj)) if (!['model', 'provider', 'maxDiffBytes', 'canBlock', 'effort'].includes(k)) problems.push(`unknown key "judge.${k}"`);
+      for (const k of Object.keys(jj)) if (!['model', 'provider', 'apiKeyEnv', 'maxDiffBytes', 'canBlock', 'effort'].includes(k)) problems.push(`unknown key "judge.${k}"`);
       cfg.judge = jc;
     } else problems.push('"judge" must be an object (or null to disable)');
   }

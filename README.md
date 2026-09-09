@@ -63,7 +63,7 @@ State lives in `~/.gatekeep/`, mirrored under the repository's own `.git/gatekee
 | **Scope** | Protected paths edited (migrations, auth, payments, infra), new or loosened dependencies, registry changes, typosquats, secrets, a feature deleted together with its tests |
 | **Source fitted to the tests** | A new branch compares against a value only the tests used, its constants are those of one test case, a table is keyed by test values, or the implementation reads the test runner's own environment. This is the half of source-side cheating a diff can see |
 | **Original tests against final code** (opt-in `testCommand`) | The tests the session started with, kept where the agent cannot touch them, fail on the final code while the agent's edited tests pass |
-| **Model-backed review** (opt-in `judge`) | A model reads the diff with the task in hand: weakened-but-passing tests, special-cased inputs, task mismatch, text addressed to the reviewer. **Advisory** — it adds suggestions and annotates blocks, and never decides the verdict or lifts a block. Off unless you turn it on, and it runs on your own API key; spending a Claude subscription instead is a named opt-in |
+| **Model-backed review** (opt-in `judge`) | A model reads the diff with the task in hand: weakened-but-passing tests, special-cased inputs, task mismatch, text addressed to the reviewer. **Advisory** — it adds suggestions and annotates blocks, and never decides the verdict or lifts a block. Off unless you turn it on: it runs only when you set the API key it names, on your key, and never picks up an ambient login |
 
 Every rule and its default severity: [docs/rules.md](docs/rules.md). The two opt-in layers in detail: [docs/checks.md](docs/checks.md) and [docs/judge.md](docs/judge.md).
 

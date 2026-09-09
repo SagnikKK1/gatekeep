@@ -10,7 +10,7 @@ import type { Finding } from '../src/model.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIX = path.join(here, '..', '..', 'test', 'fixtures', 'judge');
-const cfg: JudgeConfig = { model: 'claude-opus-5', provider: 'replay', maxDiffBytes: 200 * 1024, canBlock: false, effort: 'high' };
+const cfg: JudgeConfig = { model: 'claude-opus-5', provider: 'replay', apiKeyEnv: 'ANTHROPIC_API_KEY', maxDiffBytes: 200 * 1024, canBlock: false, effort: 'high' };
 type Fixture = JudgeInput & { expect: { rules: string[]; annotated: Record<string, string> } };
 const loadFixture = async (name: string) => ({
   input: JSON.parse(await fs.readFile(path.join(FIX, name, 'input.json'), 'utf8')) as Fixture,
@@ -164,4 +164,22 @@ test('claude -p results: structured output wins, the requested model is picked o
   assert.throws(() => parseClaudeCodeResult(JSON.stringify({ subtype: 'error_max_turns', is_error: true, errors: ['Reached maximum number of turns (3)'] }), 'm'), /maximum number of turns/);
   assert.throws(() => parseClaudeCodeResult('Warning: something\n', 'm'), /other than JSON/);
   assert.deepEqual(Object.keys(providers).sort(), ['anthropic', 'auto', 'claude-code', 'replay']);
+});
+
+test('the API key is the switch: with the named variable unset the judge does not run and the gate still decides', async () => {
+  const { root, commit } = repo();
+  await write(root, 'app/a.py', 'def f(): return 0\n');
+  await write(root, 'tests/test_a.py', 'def test_f(): assert f() == 1\n');
+  const base = commit();
+  await write(root, 'app/a.py', 'def f(): return 1\n');
+  const cur = commit();
+  const changes = [{ path: 'app/a.py', status: 'M' as const }];
+  const cfgAnthropic: JudgeConfig = { ...cfg, provider: 'anthropic', apiKeyEnv: 'GATEKEEP_TEST_MISSING_KEY' };
+  delete process.env.GATEKEEP_TEST_MISSING_KEY;
+  const r = await runJudge({ root, base, cur, changes, cfg: cfgAnthropic, task: 't', claim: null, findings: [], severities: {}, isTest: (p) => p.startsWith('tests/'), cacheDir: null });
+  assert.equal(r.result.status, 'skipped');
+  assert.match(r.result.reason!, /no API key/);
+  assert.deepEqual(r.findings.map((f) => f.rule), ['judge-skipped']);
+  assert.equal(r.findings[0]!.severity, 'warn', 'a missing key never blocks');
+  await fs.rm(root, { recursive: true, force: true });
 });

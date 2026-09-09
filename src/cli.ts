@@ -146,7 +146,7 @@ async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sess
  */
 async function judgeStep(root: string, base: string, a: Analysis, cfg: GatekeepConfig, task: string | null, findings: Finding[], flags: Args['flags']): Promise<JudgeResult | null> {
   if (flags['no-judge'] === true) return null;
-  const jc = typeof flags.judge === 'string' ? { ...(cfg.judge ?? { provider: 'anthropic', maxDiffBytes: 200 * 1024, canBlock: false, effort: 'high' as const }), model: flags.judge } : cfg.judge;
+  const jc = typeof flags.judge === 'string' ? { ...(cfg.judge ?? { provider: 'anthropic', apiKeyEnv: 'ANTHROPIC_API_KEY', maxDiffBytes: 200 * 1024, canBlock: false, effort: 'high' as const }), model: flags.judge } : cfg.judge;
   if (!jc) return null;
   const { result, findings: extra } = await runJudge({ root, base, cur: a.cur, changes: a.changes, cfg: jc, task, claim: a.claim, findings, severities: cfg.rules.severities, isTest: (p) => isTestFile(p, cfg.rules), cacheDir: path.join(repoStateDir(root), 'judge') });
   findings.push(...extra);

@@ -27,6 +27,12 @@ export interface JudgeConfig {
    * `auto`: the API credential when one is set, Claude Code otherwise. `replay` replays a recording, for tests.
    */
   provider: string;
+  /**
+   * The environment variable holding the API key. The judge runs when it is set and does not when it is not: the
+   * key is the switch. gatekeep reads only this variable and hands the value to the SDK, so nothing is picked up
+   * from an ambient login the user did not offer for this.
+   */
+  apiKeyEnv: string;
   maxDiffBytes: number;
   /** Judge-emitted warnings become blocks. Deterministic findings are never touched either way. */
   canBlock: boolean;
@@ -34,7 +40,7 @@ export interface JudgeConfig {
 }
 
 /** One call. Other providers implement this signature and register under their name in `providers`. */
-export interface JudgeRequest { model: string; effort: JudgeConfig['effort']; system: string; user: string; schema: Record<string, unknown> }
+export interface JudgeRequest { model: string; effort: JudgeConfig['effort']; system: string; user: string; schema: Record<string, unknown>; apiKey?: string }
 export interface JudgeResponse { model: string; raw: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd?: number } }
 export type JudgeProvider = (req: JudgeRequest) => Promise<JudgeResponse>;
 
@@ -303,7 +309,7 @@ export async function runJudge(o: RunJudgeOptions): Promise<{ result: JudgeResul
   if (!response) {
     const provider = o.provider ?? providers[o.cfg.provider];
     if (!provider) return { result: skipped('skipped', `unknown judge provider "${o.cfg.provider}"`, t0, o.cfg.model, base), findings: skipFinding(`unknown provider "${o.cfg.provider}"`) };
-    try { response = await provider({ model: o.cfg.model, effort: o.cfg.effort, system: SYSTEM_PROMPT, user, schema: OUTPUT_SCHEMA }); }
+    try { response = await provider({ model: o.cfg.model, effort: o.cfg.effort, system: SYSTEM_PROMPT, user, schema: OUTPUT_SCHEMA, apiKey: process.env[o.cfg.apiKeyEnv] }); }
     catch (e) {
       const msg = (e as Error).message ?? String(e);
       const status = e instanceof JudgeUnavailable ? 'skipped' : 'error';
@@ -323,9 +329,10 @@ export async function runJudge(o: RunJudgeOptions): Promise<{ result: JudgeResul
 /** Anthropic Messages API: adaptive thinking, the rubric under a cache breakpoint, the reply forced through the schema. */
 export const anthropicProvider: JudgeProvider = async (req) => {
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
+  if (!req.apiKey) throw new JudgeUnavailable('no API key was provided');
   let client: InstanceType<typeof Anthropic>;
-  try { client = new Anthropic({ maxRetries: 1, timeout: SDK_TIMEOUT_MS }); }
-  catch (e) { throw new JudgeUnavailable(`no credentials (${(e as Error).message}); set ANTHROPIC_API_KEY or run \`ant auth login\``); }
+  try { client = new Anthropic({ apiKey: req.apiKey, maxRetries: 1, timeout: SDK_TIMEOUT_MS }); }
+  catch (e) { throw new JudgeUnavailable(`the API key was rejected by the client (${(e as Error).message})`); }
   let msg: Anthropic.Message;
   try {
     const stream = client.messages.stream({
@@ -339,8 +346,7 @@ export const anthropicProvider: JudgeProvider = async (req) => {
     msg = await stream.finalMessage();
   } catch (e) {
     // The client resolves credentials lazily: with none at all it throws a plain Error at the first request.
-    if (e instanceof Error && !(e instanceof Anthropic.APIError) && /could not resolve authentication/i.test(e.message)) throw new JudgeUnavailable('no credentials found; set ANTHROPIC_API_KEY or run `ant auth login`');
-    if (e instanceof Anthropic.AuthenticationError) throw new JudgeUnavailable(`credentials rejected (${e.status}); set ANTHROPIC_API_KEY or run \`ant auth login\``);
+    if (e instanceof Anthropic.AuthenticationError) throw new JudgeUnavailable(`the API key was rejected (${e.status})`);
     if (e instanceof Anthropic.APIError && e.message && /api key|credential|auth/i.test(e.message) && (e.status === undefined || e.status === 401 || e.status === 403)) throw new JudgeUnavailable(e.message);
     if (e instanceof Anthropic.RateLimitError) throw new Error(`rate limited by the API (429)`);
     if (e instanceof Anthropic.APIConnectionError) throw new Error(`could not reach the API (${e.message})`);
@@ -401,11 +407,11 @@ export function parseClaudeCodeResult(stdout: string, requested: string): JudgeR
 }
 
 /**
- * `auto`: an API credential in the environment wins; otherwise Claude Code if it is installed. Not the default,
- * because falling back to Claude Code spends a subscription the user did not offer for this.
+ * `auto`: the API key when the user has set one; otherwise Claude Code if it is installed. Not the default, because
+ * falling back to Claude Code spends a subscription the user did not offer for this.
  */
 export const autoProvider: JudgeProvider = async (req) => {
-  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) return anthropicProvider(req);
+  if (req.apiKey) return anthropicProvider(req);
   const { execFile } = await import('node:child_process');
   const hasClaude = await new Promise<boolean>((resolve) => execFile('claude', ['--version'], { timeout: 15000 }, (err) => resolve(!err)));
   return hasClaude ? claudeCodeProvider(req) : anthropicProvider(req);

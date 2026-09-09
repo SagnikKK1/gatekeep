@@ -20,11 +20,19 @@ What it adds, all at `warn` by default:
 - `judge-review-manipulation`: text in the diff written for the reviewer or a model rather than the program: a comment saying the change is approved, asking for no findings, or trying to close the diff element. The prompt treats such text as data; this rule makes the attempt itself visible.
 - A one-line triage on every blocking finding, `consistent with the task` or `looks like evasion`, with a reason. The block stands either way; the annotation is for the human.
 
-**Nothing runs unless you ask for it, and it spends your credential, not one gatekeep chose.** The judge is off
-until `judge` appears in `gatekeep.config.json`, and the default provider is the Anthropic API with your own key.
-Spending a Claude subscription instead is `"provider": "claude-code"`, by name; `auto` will fall back to it, and is
-also opt-in. With no credential at all the review is skipped and the verdict says so as `judge-skipped` (warn) —
-the gate still decides on the deterministic findings, so a missing key never changes an outcome.
+**Your key is the switch.** gatekeep reads one environment variable, the one named by `judge.apiKeyEnv`
+(default `ANTHROPIC_API_KEY`), and hands that value to the SDK. Set it and the review runs; leave it unset and the
+review does not, whatever else is on the machine. Nothing is picked up from an `ant auth login` profile or any
+other ambient login, because a credential you have for something else is not consent to spend it here.
+
+```json
+{ "judge": { "model": "claude-opus-5", "apiKeyEnv": "MY_TEAM_KEY" } }
+```
+
+Spending a Claude subscription instead of an API key is `"provider": "claude-code"`, by name; `auto` falls back to
+it when no key is set, and is also opt-in. With no key the review is skipped and the verdict records
+`judge-skipped` (warn), so a misconfiguration is visible — but the gate still decides on the deterministic
+findings, so a missing key never changes an outcome.
 
 **The judge is advisory by default, and that is deliberate.** Its findings are warnings: they are collected under
 *Suggestions from the model-backed review* in `gatekeep report`, they are reported to you, and they do not stop the
@@ -45,7 +53,7 @@ Where the model comes from is `judge.provider`:
 
 | Provider | Uses | Needs |
 |---|---|---|
-| `anthropic` (default) | the Messages API through the SDK: adaptive thinking, the rubric under a cache breakpoint, the reply forced through the schema | your own `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login` profile |
+| `anthropic` (default) | the Messages API through the SDK: adaptive thinking, the rubric under a cache breakpoint, the reply forced through the schema | the key in `judge.apiKeyEnv` (default `ANTHROPIC_API_KEY`) |
 | `auto` | the API credential when one is set, Claude Code otherwise | either of the other two |
 | `claude-code` | Claude Code headless (`claude -p`) with the rubric as its entire system prompt, no settings loaded (so no hooks), no tools, structured output through `--json-schema`. Runs on your Claude subscription | Claude Code installed and logged in, or `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` (that token is for Claude Code only; it is not accepted by the API directly) |
 
