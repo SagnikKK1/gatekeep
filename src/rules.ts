@@ -9,6 +9,7 @@ import { extractJava } from './extract/java.js';
 import { extractRuby } from './extract/ruby.js';
 import { integrityFindings, INTEGRITY_GLOBS, INTEGRITY_SEVERITIES } from './integrity.js';
 import { CLAIM_SEVERITIES } from './claims.js';
+import { oracleFindings, ORACLE_SEVERITIES } from './oracle.js';
 import { scopeFindings, SCOPE_SEVERITIES, SCOPE_GLOBS, LOCKFILE_GLOBS, DEFAULT_PROTECTED_GLOBS } from './scope.js';
 
 export interface RuleConfig {
@@ -63,6 +64,7 @@ export const DEFAULT_SEVERITIES: Record<string, Severity> = {
   ...INTEGRITY_SEVERITIES,
   ...CLAIM_SEVERITIES,
   ...SCOPE_SEVERITIES,
+  ...ORACLE_SEVERITIES,
   'gitignore-hides-tests': 'block',
   // Model-backed review (opt-in via `judge` in the config). Severities are enforced here, never by the model.
   'judge-test-weakened': 'warn',
@@ -120,6 +122,8 @@ export interface AnalyzeOptions {
   sessionMode?: boolean;
   /** The task statement, for the out-of-scope check. */
   task?: string | null;
+  /** Test files as they stood at session start. Unchanged ones are not in the diff, and the oracle rule needs them. */
+  baseTestFiles?: Map<string, string>;
 }
 
 interface Examined { c: FileChange; before: TestFileModel | null; after: TestFileModel | null }
@@ -325,6 +329,7 @@ export async function analyze(changes: FileChange[], cfg: RuleConfig = DEFAULT_R
   }
   findings.push(...integrityFindings(visible, cfg.severities, (p) => isTestFile(p, cfg)));
   findings.push(...scopeFindings(visible, cfg.severities, { protectedGlobs: cfg.protectedGlobs ?? DEFAULT_PROTECTED_GLOBS, task: opts.task, isTest: (p) => isTestFile(p, cfg) }));
+  findings.push(...oracleFindings(visible, cfg.severities, { isTest: (p) => isTestFile(p, cfg), baseTestFiles: opts.baseTestFiles }));
   // .gitignore patterns that would hide test files from the snapshot (git add -A honors them)
   for (const c of visible) {
     if (!/(^|\/)\.gitignore$/.test(c.path) || c.after === undefined) continue;

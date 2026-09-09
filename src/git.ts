@@ -77,6 +77,12 @@ export async function snapshotWorkingTree(cwd: string): Promise<string> {
   }
 }
 
+/** Every file path in a tree. Read-only, so it runs without the index. */
+export async function lsTree(cwd: string, tree: string): Promise<string[]> {
+  const out = await git(cwd, ['ls-tree', '-r', '--name-only', '-z', tree], NO_INDEX);
+  return out.split('\0').filter(Boolean);
+}
+
 export async function catFile(cwd: string, tree: string, p: string): Promise<string | undefined> {
   try { return await git(cwd, ['cat-file', '-p', `${tree}:${p}`], NO_INDEX); } catch { return undefined; }
 }

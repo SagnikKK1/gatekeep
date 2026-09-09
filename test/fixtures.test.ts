@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { analyze } from '../src/rules.js';
+import { analyze, isTestFile, DEFAULT_RULE_CONFIG } from '../src/rules.js';
 import type { FileChange, Finding } from '../src/model.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -47,7 +47,9 @@ for (const name of names) {
     const before = await walk(path.join(dir, 'before'));
     const after = await walk(path.join(dir, 'after'));
     const expected = JSON.parse(await fs.readFile(path.join(dir, 'expected.json'), 'utf8')) as { findings: Expected[] };
-    const result = await analyze(diffDirs(before, after), undefined, { exists: (p) => p in after });
+    // Unchanged test files are not in the diff; the CLI reads them from the base tree, so the harness does too.
+    const baseTestFiles = new Map(Object.entries(before).filter(([p]) => isTestFile(p, DEFAULT_RULE_CONFIG)));
+    const result = await analyze(diffDirs(before, after), undefined, { exists: (p) => p in after, baseTestFiles });
     const got = result.findings.map(key).sort();
     const want = expected.findings.map(key).sort();
     assert.deepEqual(got, want, `findings mismatch\n got: ${JSON.stringify(result.findings, null, 1)}`);

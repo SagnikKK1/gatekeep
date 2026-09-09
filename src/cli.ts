@@ -6,7 +6,8 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { analyze, needsContent, PROTECTED_FILES, type AnalysisResult } from './rules.js';
 import { parseConfig, readConfigText, defaultConfigText, CONFIG_FILENAME, type GatekeepConfig } from './config.js';
-import { repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees, catFile, GitError } from './git.js';
+import { repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees, catFile, lsTree, BlobBatch, GitError } from './git.js';
+import { langFor } from './lang.js';
 import { loadSession, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, type SessionState } from './session.js';
 import { decide, writeVerdict, formatReport, type Verdict } from './verdict.js';
 import { installClaudeCode, uninstallClaudeCode, installCodex, installedHooks } from './install.js';
@@ -15,12 +16,14 @@ import { readTranscript, claimFindings } from './claims.js';
 import { applyOverrides, overridesFromPrompts, overridesFromCli, overridesFromCommits, type Override } from './override.js';
 import { isTestFile } from './rules.js';
 import { runJudge, type JudgeResult } from './judge.js';
+import { renderReport } from './report.js';
+import { spawn } from 'node:child_process';
 import type { Finding, FileChange } from './model.js';
 
 const require = createRequire(import.meta.url);
 const VERSION: string = (require('../../package.json') as { version: string }).version;
-const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet', 'no-judge']);
-const VALUE_FLAGS = ['session', 'base', 'allow', 'harness', 'id', 'task', 'transcript', 'judge'];
+const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet', 'no-judge', 'stdout', 'open']);
+const VALUE_FLAGS = ['session', 'base', 'allow', 'harness', 'id', 'task', 'transcript', 'judge', 'out'];
 
 interface Args { _: string[]; flags: Record<string, string | boolean> }
 function parseArgs(argv: string[]): Args {
@@ -68,6 +71,9 @@ Usage:
   gatekeep uninstall [--shared | --global]
   gatekeep status
       Show where hooks are wired, the state directory, recent sessions and the last verdict.
+  gatekeep report [<verdict.json>] [--session <id>] [--out <file.html>] [--stdout] [--open]
+      Render a verdict (default: the latest for this repository) as one self-contained HTML file with the
+      test bodies before and after the session next to each finding. Written beside the verdict unless --out.
   gatekeep init
       Write a ${CONFIG_FILENAME} with default rule severities.
   gatekeep --version
@@ -95,10 +101,38 @@ async function configFor(root: string, baseTree: string | null, session: Session
 
 interface Analysis { cur: string; changes: FileChange[]; result: AnalysisResult; originalTests: TestRunResult | null; claim: string | null }
 
+/**
+ * Test files as they stood at session start. The oracle rule compares new source against what the tests know, and
+ * an agent that fits the implementation to the tests does not touch them, so they are not in the diff. Bounded:
+ * a repository with thousands of test files is not worth loading for this.
+ */
+const BASE_TESTS_MAX_FILES = 400, BASE_TESTS_MAX_BYTES = 4 * 1024 * 1024;
+async function baseTestFiles(root: string, base: string, cfg: GatekeepConfig, changes: FileChange[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!changes.some((c) => !isTestFile(c.path, cfg.rules) && langFor(c.path) !== null)) return out; // no source changed
+  let paths: string[];
+  try { paths = await lsTree(root, base); } catch { return out; }
+  const inDiff = new Set(changes.filter((c) => isTestFile(c.path, cfg.rules)).map((c) => c.path));
+  const want = paths.filter((p) => isTestFile(p, cfg.rules) && !inDiff.has(p)).slice(0, BASE_TESTS_MAX_FILES);
+  if (want.length === 0) return out;
+  const batch = new BlobBatch(root);
+  try {
+    let bytes = 0;
+    for (const p of want) {
+      const b = await batch.read(base, p).catch(() => null);
+      if (!b || b.length > 512 * 1024 || b.subarray(0, 8000).includes(0)) continue;
+      bytes += b.length;
+      if (bytes > BASE_TESTS_MAX_BYTES) break;
+      out.set(p, b.toString('utf8'));
+    }
+  } finally { batch.close(); }
+  return out;
+}
+
 async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sessionMode: boolean, transcriptPath?: string, task?: string | null): Promise<Analysis> {
   const cur = await snapshotWorkingTree(root);
   const changes = await diffTrees(root, base, cur, { shouldLoad: (p) => needsContent(p, cfg.rules), maxBytes: 2 * 1024 * 1024 });
-  const result = await analyze(changes, cfg.rules, { exists: (p) => existsSync(path.join(root, p)), sessionMode, task });
+  const result = await analyze(changes, cfg.rules, { exists: (p) => existsSync(path.join(root, p)), sessionMode, task, baseTestFiles: await baseTestFiles(root, base, cfg, changes) });
   const originalTests = base === cur ? null : await runOriginalTests(root, base, cur, changes, cfg.rules, { testCommand: cfg.testCommand, testTimeoutMs: cfg.testTimeoutMs });
   result.findings.push(...testRunFindings(originalTests, cfg.rules.severities));
   const transcript = transcriptPath ? await readTranscript(transcriptPath) : null;
@@ -328,6 +362,37 @@ async function cmdUninstall(args: Args, cwd: string): Promise<number> {
   return 0;
 }
 
+async function cmdReport(args: Args, cwd: string): Promise<number> {
+  for (const k of VALUE_FLAGS) if (args.flags[k] === true) throw new UserError(`--${k} requires a value`);
+  const root = await repoRoot(cwd);
+  let vp: string;
+  if (args._[1]) vp = path.resolve(cwd, args._[1]);
+  else {
+    if (!root) throw new UserError('not inside a git repository; pass the verdict file as an argument');
+    const dir = verdictDir(root);
+    if (typeof args.flags.session === 'string') {
+      const sid = args.flags.session.slice(0, 8);
+      const names = (await fs.readdir(dir).catch(() => [] as string[])).filter((n) => n.endsWith(`-${sid}.json`)).sort();
+      if (names.length === 0) throw new UserError(`no verdict for session "${args.flags.session}" under ${dir}`);
+      vp = path.join(dir, names[names.length - 1]!);
+    } else vp = path.join(dir, 'latest.json');
+  }
+  let v: Verdict;
+  try { v = JSON.parse(await fs.readFile(vp, 'utf8')) as Verdict; } catch (e) { throw new UserError(`cannot read verdict ${vp}: ${(e as Error).message}`); }
+  if (v.schema !== 'gatekeep.verdict.v1' || !v.checks?.testIntegrity) throw new UserError(`${vp} is not a gatekeep verdict`);
+  const html = await renderReport(v, { root, verdictPath: vp });
+  if (args.flags.stdout) { process.stdout.write(html); return 0; }
+  const out = typeof args.flags.out === 'string' ? path.resolve(cwd, args.flags.out) : vp.replace(/\.json$/, '') + '.html';
+  await fs.mkdir(path.dirname(out), { recursive: true });
+  await fs.writeFile(out, html, { mode: 0o600 });
+  console.log(out);
+  if (args.flags.open) {
+    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+    spawn(opener, [out], { stdio: 'ignore', detached: true, shell: process.platform === 'win32' }).on('error', () => { /* printing the path is enough */ }).unref();
+  }
+  return 0;
+}
+
 async function cmdStatus(cwd: string): Promise<number> {
   const hooks = await installedHooks(cwd);
   console.log(`gatekeep ${VERSION}`);
@@ -364,6 +429,7 @@ async function main(): Promise<number> {
     case 'install': return cmdInstall(args, cwd);
     case 'uninstall': return cmdUninstall(args, cwd);
     case 'status': return cmdStatus(cwd);
+    case 'report': return cmdReport(args, cwd);
     case 'init': {
       const root = (await repoRoot(cwd)) ?? cwd;
       await fs.writeFile(path.join(root, CONFIG_FILENAME), defaultConfigText());

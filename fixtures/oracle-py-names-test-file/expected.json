@@ -1,0 +1,8 @@
+{
+  "findings": [
+    {
+      "rule": "test-oracle-in-source",
+      "file": "app/solve.py"
+    }
+  ]
+}
