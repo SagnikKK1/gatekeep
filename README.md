@@ -13,6 +13,16 @@ gatekeep install                        # wires Claude Code hooks into .claude/s
 gatekeep status                         # confirms the hooks and shows the state directory
 ```
 
+As a Claude Code plugin instead, which wires the same three hooks for every project without touching any repository:
+
+```bash
+claude plugin marketplace add SagnikKK1/gatekeep
+claude plugin install gatekeep@gatekeep
+```
+
+The plugin runs a `gatekeep` already on your PATH, falls back to the plugin's own build, and only then to `npx`.
+Install the npm package too if you want the fast path.
+
 That is the whole setup. Start a Claude Code session as usual. When the agent tries to finish after weakening a test, it sees this instead and has to fix the implementation:
 
 ```

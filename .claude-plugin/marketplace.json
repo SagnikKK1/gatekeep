@@ -1,0 +1,27 @@
+{
+  "name": "gatekeep",
+  "owner": {
+    "name": "Sagnik Dey",
+    "email": "sagnik1.dey.official@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "gatekeep",
+      "source": "./",
+      "description": "Blocks the agent from declaring done when it weakened the tests or the checks that grade it.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Sagnik Dey"
+      },
+      "homepage": "https://github.com/SagnikKK1/gatekeep",
+      "license": "Apache-2.0",
+      "keywords": [
+        "testing",
+        "verification",
+        "hooks",
+        "reward-hacking"
+      ]
+    }
+  ],
+  "description": "gatekeep: an independent verification gate for AI coding agents."
+}

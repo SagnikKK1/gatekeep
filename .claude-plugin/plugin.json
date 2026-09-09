@@ -1,0 +1,11 @@
+{
+  "name": "gatekeep",
+  "description": "Blocks the agent from declaring done when it weakened the tests or the checks that grade it.",
+  "version": "0.1.0",
+  "author": { "name": "Sagnik Dey", "email": "sagnik1.dey.official@gmail.com" },
+  "homepage": "https://github.com/SagnikKK1/gatekeep",
+  "repository": "https://github.com/SagnikKK1/gatekeep",
+  "license": "Apache-2.0",
+  "keywords": ["testing", "verification", "hooks", "reward-hacking", "code-review"],
+  "hooks": "./hooks/hooks.json"
+}
