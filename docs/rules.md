@@ -11,6 +11,8 @@ Part of [gatekeep](../README.md): every rule and its default severity.
 | `paths-hidden-from-snapshot` | block | An untracked path is hidden by `.git/info/exclude` or `core.excludesFile` rather than by a committed `.gitignore`. Neither file is in the diff, so a change there cannot be reviewed |
 | `original-tests-fail` | block | With `testCommand` set: the session's original tests fail on the current code while the edited tests pass |
 | `tests-failing` | warn | With `testCommand` set: the suite fails with the original tests and with the edited ones |
+| `test-run-timeout` | warn | With `testCommand` set: the suite did not finish inside `testTimeoutMs`, so the original tests could not be judged |
+| `test-run-error` | warn | With `testCommand` set: the suite could not be run at all — the command is missing, the scratch export failed, or the runner crashed before reporting |
 | `test-file-deleted` | block | A test file with tests in it is removed and its tests do not reappear elsewhere |
 | `test-support-file-deleted` | warn | A file under a test directory with no tests in it is removed |
 | `test-file-moved-out` | block | A test file is renamed to a path or name the runner will not collect: an ignored directory, or `tests/zzz_calc.py` in place of `tests/test_calc.py` |
