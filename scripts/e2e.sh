@@ -177,6 +177,21 @@ echo '{"rules":{"test-deleted":"off","gate-config-changed":"off"}}' > gatekeep.c
 err=$(hook stop '{"session_id":"s6","cwd":"'"$R"'"}' 2>/dev/null); code=$?
 check "config written mid-session is not honored" 'blocked "$err" && echo "$err" | grep -q test-deleted'
 git checkout -q . && rm -f gatekeep.config.json && git reset -q --hard HEAD~1
+echo "== honest work in a protected path passes silently"
+A="$E2E/authfix"; mkdir -p "$A/src/auth" "$A/tests"; cd "$A"; git init -q -b main
+printf 'def login(user, pw):\n    if pw == "":\n        return None\n    return {"ok": True}\n' > src/auth/login.py
+printf 'from src.auth.login import login\n\ndef test_login():\n    assert login("a", "") is None\n' > tests/test_login.py
+git add -A && git commit -qm base
+sid=$(node "$CLI" session start --task "Fix the login bug so bad passwords are rejected")
+printf 'def login(user, pw):\n    if not pw or pw != "correct":\n        return None\n    return {"ok": True}\n' > src/auth/login.py
+node "$CLI" verify --session "$sid" >/tmp/gk_out 2>&1; code=$?
+check "an auth fix the task asked for is not a protected-path block" '[ $code -eq 0 ] && grep -q "GATEKEEP PASSED" /tmp/gk_out && ! grep -q protected-path-edited /tmp/gk_out'
+sid2=$(node "$CLI" session start --task "Update the README badge")
+printf 'def login(user, pw):\n    return {"ok": True}\n' > src/auth/login.py
+node "$CLI" verify --session "$sid2" >/tmp/gk_out 2>&1
+check "the same edit under an unrelated task is still reported, at warn" 'grep -q protected-path-edited /tmp/gk_out && grep -q "\[warn\] protected-path-edited" /tmp/gk_out'
+cd "$R"
+
 echo "== the index and local excludes cannot hide a change from the snapshot"
 hook session-start '{"session_id":"s8","cwd":"'"$R"'","source":"startup"}' >/dev/null
 sedi '/def test_add_zero/,$d' tests/test_calc.py
@@ -342,7 +357,10 @@ node "$CLI" install >/tmp/gk_out 2>&1; code=$?
 check "malformed settings: refuses to overwrite" '[ $code -ne 0 ] && grep -q "not valid JSON" /tmp/gk_out && grep -q permissions .claude/settings.local.json'
 rm -rf .claude
 Q="$E2E/pa\$th/gk"; mkdir -p "$Q"; cp -R "$HERE/dist" "$Q/dist"; cp "$HERE/package.json" "$Q/"; ln -s "$HERE/node_modules" "$Q/node_modules"
-node "$Q/dist/src/cli.js" install >/dev/null 2>&1
+# The installer prefers a bare `gatekeep` when one is on PATH, which on a machine with the package linked would never
+# exercise the quoting branch at all. A PATH with only node in it forces the absolute-path form this check is about.
+NB="$E2E/nodebin"; mkdir -p "$NB"; ln -sf "$(command -v node)" "$NB/node"
+PATH="$NB:/usr/bin:/bin" node "$Q/dist/src/cli.js" install >/dev/null 2>&1
 check "hook command shell-quotes a path containing \$" "grep -q \"'\" .claude/settings.local.json && ! grep -q '\"node \\\\\"' .claude/settings.local.json"
 rm -rf .claude
 

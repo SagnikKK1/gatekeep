@@ -7,7 +7,7 @@ import { langFor, matchesAny } from './lang.js';
  */
 
 export const SCOPE_SEVERITIES: Record<string, Severity> = {
-  'protected-path-edited': 'block',
+  'protected-path-edited': 'warn',
   'lockfile-changed-alone': 'warn',
   'out-of-scope-change': 'warn',
   'dependency-added': 'warn',
@@ -15,7 +15,7 @@ export const SCOPE_SEVERITIES: Record<string, Severity> = {
   'registry-changed': 'block',
   'typosquat-suspect': 'block',
   'secret-introduced': 'block',
-  'feature-deleted': 'block',
+  'feature-deleted': 'warn',
 };
 
 /** Paths where an agent edit blocks unless overridden. Configurable via `protectedPaths`. */
@@ -70,15 +70,31 @@ export interface ScopeOptions {
   isTest: (p: string) => boolean;
 }
 
+/**
+ * Did the human's own task statement send the agent to this path? A task that says "fix the login bug" is an
+ * instruction to edit `src/auth/login.py`, and a gate that blocks it is reporting the work it was asked to do.
+ * Matches a directory name or file stem of four characters or more against the words of the task.
+ */
+export function taskMentions(task: string | null | undefined): (p: string) => boolean {
+  if (!task) return () => false;
+  const words = new Set((task.toLowerCase().match(/[a-z_][\w-]{3,}/g) ?? []));
+  if (words.size === 0) return () => false;
+  return (p: string) => p.toLowerCase().split('/').some((seg) => {
+    const stem = seg.replace(/\.[^.]+$/, '');
+    return stem.length >= 4 && words.has(stem);
+  });
+}
+
 export function scopeFindings(changes: FileChange[], severities: Record<string, Severity>, opts: ScopeOptions): Finding[] {
   const out: Finding[] = [];
   const sev = (rule: string): Severity => severities[rule] ?? SCOPE_SEVERITIES[rule] ?? 'warn';
   const emit = (f: Omit<Finding, 'severity'>) => { const s = sev(f.rule); if (s !== 'off') out.push({ ...f, severity: s }); };
 
-  // 1. protected paths
+  // 1. protected paths, unless the task the human wrote sent the agent there in the first place
+  const asked = taskMentions(opts.task);
   for (const c of changes) {
     const hit = [c.path, c.oldPath].filter((p): p is string => !!p).find((p) => matchesAny(p, opts.protectedGlobs));
-    if (hit && !opts.isTest(c.path)) emit({ rule: 'protected-path-edited', file: c.path, message: `${c.status === 'D' ? 'Deleted' : c.status === 'A' ? 'Created' : 'Modified'} a protected path (${matchingGlob(hit, opts.protectedGlobs)})` });
+    if (hit && !opts.isTest(c.path) && !asked(c.path)) emit({ rule: 'protected-path-edited', file: c.path, message: `${c.status === 'D' ? 'Deleted' : c.status === 'A' ? 'Created' : 'Modified'} a protected path (${matchingGlob(hit, opts.protectedGlobs)})` });
   }
 
   // 2. lockfiles without a manifest change
@@ -121,7 +137,9 @@ export function scopeFindings(changes: FileChange[], severities: Record<string, 
     const removedTestText = changes.filter((c) => (opts.isTest(c.path) || (c.oldPath && opts.isTest(c.oldPath))) && c.before !== undefined)
       .map((c) => removed(c).filter((l) => !/^(from\s|import\s|const .*require\(|export )/.test(l)).join('\n')).join('\n');
     const covered = [...removedDefs].filter(([n]) => n.length >= 4 && !definedAfter.has(n) && new RegExp(`(^|[^\\w.])${n}\\s*\\(|\\.${n}\\s*\\(`, 'm').test(removedTestText));
-    if (covered.length > 0) emit({ rule: 'feature-deleted', file: covered[0]![1], message: `${covered.map(([n]) => n).slice(0, 5).join(', ')} removed from source together with the tests that covered ${covered.length === 1 ? 'it' : 'them'}` });
+    // A removal the task asked for is the job, not blast radius.
+    const unasked = covered.filter(([n, f]) => !asked(f) && !new RegExp(`(^|[^\\w])${n.toLowerCase()}([^\\w]|$)`).test((opts.task ?? '').toLowerCase()));
+    if (unasked.length > 0) emit({ rule: 'feature-deleted', file: unasked[0]![1], message: `${unasked.map(([n]) => n).slice(0, 5).join(', ')} removed from source together with the tests that covered ${unasked.length === 1 ? 'it' : 'them'}` });
   }
 
   // 6. out of scope relative to the task, only when the task names concrete files or modules

@@ -38,7 +38,7 @@ Part of [gatekeep](../README.md): every rule and its default severity.
 | `mock-on-source-module` | block | A `conftest.py` fixture newly patches a first-party module for every test |
 | `retry-added` | warn | `@pytest.mark.flaky`, `jest.retryTimes`, `{ retry: n }` added |
 | `tolerance-loosened` | warn | The same assertion's `approx(rel=...)`, `assertAlmostEqual(places=...)`, `toBeCloseTo(x, digits)` got looser |
-| `test-config-narrowed` | block | Test collection was narrowed: a new or changed `testpaths`, `--ignore`, `--deselect`, `-k`, `testPathIgnorePatterns`, `collect_ignore`, `testMatch`, including a newly added config file |
+| `test-config-narrowed` | warn | Test collection was narrowed: a new or changed `testpaths`, `--ignore`, `--deselect`, `-k`, `testPathIgnorePatterns`, `collect_ignore`, `testMatch`, including a newly added config file |
 | `test-config-changed` | warn | Other test or coverage settings changed: `addopts`, `coverageThreshold`, reruns, a `conftest.py` that patches, and the like. Removed lines count too |
 | `config-invalid` | warn | `gatekeep.config.json` has problems; defaults are used for the bad parts |
 | `suppression-added` | warn | Check-suppression directives added to source: `@ts-ignore`, `@ts-expect-error`, `eslint-disable`, `# noqa`, `# type: ignore`, `# pylint: disable`, `# pragma: no cover`, `#[allow(...)]`, `@SuppressWarnings`, `//nolint` |
@@ -53,14 +53,14 @@ Part of [gatekeep](../README.md): every rule and its default severity.
 | `claim-checks-unverified` | warn | The final message says the build, lint or type check is clean without a matching command after the last edit |
 | `summary-files-mismatch` | warn | The final message names files that did not change, or leaves changed source and test files unmentioned |
 | `history-rewritten` | block | `git commit --amend`, force push, rebase, `reset --hard`, exclude-file writes, or a stash that was never restored during the session |
-| `protected-path-edited` | block | A file under a protected path changed: migrations, auth, payments, billing, infrastructure and container definitions by default (CI workflows have their own rules); set `protectedPaths` or `extraProtectedPaths` in the config |
+| `protected-path-edited` | warn | A file under a protected path changed: migrations, auth, payments, billing, infrastructure and container definitions by default (CI workflows have their own rules); set `protectedPaths` or `extraProtectedPaths` in the config. Suppressed entirely when the session's task statement names the directory or file, since the human asked for that edit; set it to `block` for repositories where those paths need a second pair of eyes |
 | `lockfile-changed-alone` | warn | A lockfile changed with no change to its manifest |
 | `dependency-added` | warn | A new dependency in `package.json`, `pyproject.toml`, `requirements*.txt`, `Pipfile`, `go.mod`, `Cargo.toml` or `Gemfile` |
 | `dependency-loosened` | warn | A version constraint downgraded, or an exact pin replaced by a range or `*` |
 | `registry-changed` | block | A package source changed: `.npmrc` registry, pip index URL, poetry source, cargo registry, go `replace` to a URL |
 | `typosquat-suspect` | block | A new dependency one edit away from a well-known package name |
 | `secret-introduced` | block | A cloud key, API token, private key block, JWT or connection string with a password added to any file; obvious placeholders and environment lookups are ignored |
-| `feature-deleted` | block | A top-level function or class removed from source in the same change as the tests that referenced it |
+| `feature-deleted` | warn | A top-level function or class removed from source in the same change as the tests that referenced it, unless the task named the symbol or its file |
 | `out-of-scope-change` | warn | The task names specific files, and source files unrelated to those names changed too |
 | `validation-removed` | warn | Net removal of `assert`, `invariant(...)`, `throw new ...Error` guards or `raise ...Error` checks from source |
 | `test-oracle-in-source` | warn | The implementation is fitted to the tests rather than the specification: a new condition comparing against a value only the tests used, a condition whose constants are those of a single test case, a table keyed by test values, source that reads the test runner's environment (`PYTEST_CURRENT_TEST`, `JEST_WORKER_ID`, `NODE_ENV === 'test'`), or executable code naming a test file. Comments are not evidence — an agent that reports a wrong assertion and implements the specification anyway writes exactly that |

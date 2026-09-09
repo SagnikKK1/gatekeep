@@ -34,7 +34,7 @@ export const DEFAULT_SEVERITIES: Record<string, Severity> = {
   'tests-failing': 'warn',
   'test-run-timeout': 'warn',
   'test-run-error': 'warn',
-  'test-config-narrowed': 'block',
+  'test-config-narrowed': 'warn',
   'mock-on-source-module': 'block',
   'test-file-deleted': 'block',
   'test-support-file-deleted': 'warn',
