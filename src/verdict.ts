@@ -98,7 +98,12 @@ export function formatReport(v: Verdict, opts: { forAgent: boolean; verdictPath?
   const lines: string[] = [];
   const head = v.decision === 'block' ? 'BLOCKED' : v.decision === 'warn' ? 'PASSED WITH WARNINGS' : 'PASSED';
   const ex = v.checks.testIntegrity.examined.length, src = v.checks.testIntegrity.changedSourceFiles.length;
-  lines.push(`GATEKEEP ${head} — test integrity: ${blocks.length} blocking, ${warns.length} warning(s); ${ex} test file(s) examined, ${src} source file(s) changed.`);
+  // Name the families that actually fired. "test integrity: 1 blocking, 0 test file(s) examined" for a scope finding
+  // reads as a bug in the gate rather than a finding about the change.
+  const fams = [...new Set([...blocks, ...warns].map((x) => familyOf(x.rule)))];
+  const scope = fams.length === 0 ? 'no findings' : fams.join(', ');
+  const examined = fams.includes('test integrity') || ex > 0 ? `; ${ex} test file(s) examined, ${src} source file(s) changed` : `; ${src} source file(s) changed`;
+  lines.push(`GATEKEEP ${head} — ${scope}: ${blocks.length} blocking, ${warns.length} warning(s)${examined}.`);
   const ot = v.checks.originalTests;
   if (ot) lines.push(`  original tests vs current code: ${ot.status}${ot.originalExit !== null ? ` (exit ${ot.originalExit}${ot.currentExit !== null ? `, edited tests exit ${ot.currentExit}` : ''})` : ''}${ot.reason ? ` — ${ot.reason}` : ''}, ${(ot.durationMs / 1000).toFixed(1)}s`);
   const jg = v.checks.judge;

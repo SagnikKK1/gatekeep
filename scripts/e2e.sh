@@ -205,6 +205,8 @@ sid2=$(node "$CLI" session start --task "Update the README badge")
 printf 'def login(user, pw):\n    return {"ok": True}\n' > src/auth/login.py
 node "$CLI" verify --session "$sid2" >/tmp/gk_out 2>&1
 check "the same edit under an unrelated task is still reported, at warn" 'grep -q protected-path-edited /tmp/gk_out && grep -q "\[warn\] protected-path-edited" /tmp/gk_out'
+node "$CLI" verify --session "$sid2" --fail-on-warn >/tmp/gk_out 2>&1
+check "the header names the families that fired, not test integrity" 'head -1 /tmp/gk_out | grep -q "GATEKEEP BLOCKED — .*scope" && ! head -1 /tmp/gk_out | grep -q "test integrity"'
 cd "$R"
 
 echo "== the index and local excludes cannot hide a change from the snapshot"
