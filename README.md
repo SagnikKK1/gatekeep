@@ -40,9 +40,11 @@ Honest work passes silently. Warnings reach you, not the agent. After three bloc
 On pull requests, the same check runs from the diff in CI:
 
 ```yaml
-- uses: actions/checkout@v4
-  with: { fetch-depth: 0 }
-- uses: SagnikKK1/gatekeep@main
+permissions: { contents: read, checks: write }
+steps:
+  - uses: actions/checkout@v4
+    with: { fetch-depth: 0 }          # gatekeep needs the base commit; depth 1 cannot see it
+  - uses: SagnikKK1/gatekeep@v1
 ```
 
 `install` also writes `gatekeep.config.json`; commit it. `--shared` writes `.claude/settings.json` for the whole team (everyone needs `gatekeep` on PATH), `--global` writes `~/.claude/settings.json`, and `gatekeep uninstall` removes the hooks. From source: clone, then `npm install && npm run build && npm link`. Any other agent: `gatekeep session start --task "..."` before the work, `gatekeep verify --session <id>` after.

@@ -43,17 +43,24 @@ The same rules on every pull request, computed from the diff in CI. The action n
 ```yaml
 name: gatekeep
 on: [pull_request]
+permissions:
+  contents: read        # read the diff
+  checks: write         # write the annotations
 jobs:
   gatekeep:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - uses: SagnikKK1/gatekeep@main
+        with: { fetch-depth: 0 }   # without this the base commit is missing and the run stops with a message saying so
+      - uses: SagnikKK1/gatekeep@v1
         # with:
         #   base: ${{ github.event.pull_request.base.sha }}   # default
         #   fail-on-warn: 'true'
 ```
+
+`@v1` is a tag that moves with each 0.1.x release. To pin exactly, use the release tag (`@v0.1.0`) or the commit SHA
+(`uses: SagnikKK1/gatekeep@<sha>  # v0.1.0`), which is what Dependabot and most security policies expect. The action
+ships its compiled `dist/`, so it installs one runtime dependency and runs; there is no TypeScript build on your runner.
 
 Findings appear as check annotations on the changed lines and in the job summary. Blocking findings fail the job. Commit trailers `gatekeep: allow <rule> -- reason` between the base and the head lift a rule for that pull request and are listed in the summary with the author. Outputs: `decision` (`pass`, `warn`, `block`) and `verdict` (path to the JSON).
 
