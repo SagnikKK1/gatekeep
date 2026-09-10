@@ -586,5 +586,30 @@ printf 'K = "%s"\n' "$KEY" >> a.py; git add -A; git commit -qm "leaks a key"
 node "$CLI" install > /tmp/gk_out 2>&1
 check "install: the install that writes the config replays history and reports the cost" 'grep -q "1 of 22 would have been interrupted" /tmp/gk_out && grep -q "secret-introduced" /tmp/gk_out'
 
+echo "== gatekeep report-fp"
+# A finding, reduced to a fixture that still reproduces it, with nothing of the original left in it.
+F="$E2E/fp"; mkdir -p "$F/src" "$F/tests"; cd "$F"; git init -q -b main
+printf 'def charge_acmecorp(contract):\n    return None\n' > src/rate_card.py
+printf 'from src.rate_card import charge_acmecorp\n\ndef test_charges_gold_tier():\n    assert charge_acmecorp("acme/gold tier plan") == 1299\n' > tests/test_rate_card.py
+git add -A && git commit -qm base
+# a genuine oracle branch, so there is something to report
+printf 'def charge_acmecorp(contract):\n    if contract == "acme/gold tier plan":\n        return 1299\n    return None\n' > src/rate_card.py
+node "$CLI" run --no-judge >/dev/null 2>&1
+node "$CLI" report-fp --rule test-oracle-in-source --no-open --json > /tmp/gk_out.json 2>/tmp/gk_err; code=$?
+check "report-fp: reduces the finding to a fixture" '[ $code -eq 0 ] && node -e "const j=require(\"/tmp/gk_out.json\");process.exit(j.rule===\"test-oracle-in-source\"&&j.dir?0:1)"'
+FPD=$(node -e 'console.log(require("/tmp/gk_out.json").dir)' 2>/dev/null)
+check "report-fp: writes a fixture in the layout fixtures/ uses" '[ -f "$FPD/expected.json" ] && [ -d "$FPD/before" ] && [ -d "$FPD/after" ]'
+check "report-fp: expected.json omits the reported rule, so the fixture fails until it is fixed" 'node -e "const e=require(\"$FPD/expected.json\");process.exit(e.findings.some(f=>f.rule===\"test-oracle-in-source\")?1:0)"'
+check "report-fp: the redacted fixture still fires the rule" 'node -e "const j=require(\"/tmp/gk_out.json\");process.exit(/reproduces/.test(j.tried.join(\";\"))?0:1)"'
+check "report-fp: the reporter's identifiers, strings and paths are gone from the fixture" '! grep -rqi "acmecorp\|rate_card\|charge_\|gold tier" "$FPD/before" "$FPD/after"'
+check "report-fp: and so are their paths" '! find "$FPD" -name "*rate_card*" | grep -q .'
+check "report-fp: what is left still looks like python" 'find "$FPD/before" -name "*.py" | grep -q . && grep -rq "^def " "$FPD/before"'
+check "report-fp: prefills a github issue url labelled false-positive" 'node -e "const j=require(\"/tmp/gk_out.json\");process.exit(/^https:..github.com\/.+\/issues\/new\?/.test(j.url)&&/false-positive/.test(j.url)?0:1)"'
+node "$CLI" report-fp --rule no-such-rule --no-open > /tmp/gk_out 2>&1; code=$?
+check "report-fp: an unknown rule lists what the verdict actually has" '[ $code -eq 3 ] && grep -q "no .no-such-rule. finding" /tmp/gk_out'
+D2="$E2E/fp-empty"; mkdir -p "$D2"; cd "$D2"; git init -q -b main; echo x > a.txt; git add -A; git commit -qm base
+node "$CLI" report-fp --no-open > /tmp/gk_out 2>&1; code=$?
+check "report-fp: no verdict yet says so instead of failing obscurely" '[ $code -eq 3 ] && grep -q "no verdict found" /tmp/gk_out'
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

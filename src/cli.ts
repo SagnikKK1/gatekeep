@@ -19,13 +19,15 @@ import { runJudge, type JudgeResult } from './judge.js';
 import { renderReport } from './report.js';
 import { replay, baseTestFiles, type ReplayedCommit, type ReplayTotals } from './replay.js';
 import { recordStop, statusOf, shadowNote, readShadowState, defaultShadow, DEFAULT_SHADOW_DAYS, DEFAULT_SHADOW_SESSIONS } from './shadow.js';
+import { rawLiterals } from './oracle.js';
+import { redactFiles, fixtureName, issueUrl, type FpFile, type FpFixture, type ExpectedFinding, type RedactionLevel } from './reportfp.js';
 import { spawn } from 'node:child_process';
 import type { Finding, FileChange, Severity } from './model.js';
 
 const require = createRequire(import.meta.url);
 const VERSION: string = (require('../../package.json') as { version: string }).version;
-const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet', 'no-judge', 'stdout', 'open', 'off', 'dry-run', 'apply', 'no-calibrate', 'extend', 'on']);
-const VALUE_FLAGS = ['session', 'base', 'allow', 'harness', 'id', 'task', 'transcript', 'judge', 'out', 'commits', 'threshold', 'days', 'sessions'];
+const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet', 'no-judge', 'stdout', 'open', 'off', 'dry-run', 'apply', 'no-calibrate', 'extend', 'on', 'verbatim', 'no-open']);
+const VALUE_FLAGS = ['session', 'base', 'allow', 'harness', 'id', 'task', 'transcript', 'judge', 'out', 'commits', 'threshold', 'days', 'sessions', 'rule', 'verdict'];
 
 interface Args { _: string[]; flags: Record<string, string | boolean> }
 function parseArgs(argv: string[]): Args {
@@ -89,6 +91,9 @@ Usage:
   gatekeep shadow [--off | --on | --extend] [--days <n>] [--sessions <n>]
       Shadow mode reports what would have blocked instead of blocking. New installs start in it for
       ${DEFAULT_SHADOW_DAYS} days or ${DEFAULT_SHADOW_SESSIONS} sessions. --off turns blocking on. With no flag, shows the tally so far.
+  gatekeep report-fp [--rule <rule>] [--session <id>] [--verdict <path>] [--out <dir>] [--no-open] [--verbatim]
+      Reduce a wrong finding to a redacted fixture and open a prefilled issue. The redaction is verified: if
+      the finding stops reproducing, nothing is written rather than your source being sent unredacted.
   gatekeep init
       Write a ${CONFIG_FILENAME} with default rule severities and the repository's detected test command.
   gatekeep --version
@@ -794,6 +799,175 @@ async function cmdShadow(args: Args, cwd: string): Promise<number> {
   return 0;
 }
 
+/** Where the issue goes. Read from package.json so a fork reports to the fork, not to us. */
+const REPO_SLUG: string = (() => {
+  const url = (require('../../package.json') as { repository?: { url?: string } | string }).repository;
+  const raw = typeof url === 'string' ? url : url?.url ?? '';
+  return /github\.com[/:]([^/]+\/[^/.]+)/.exec(raw)?.[1] ?? 'SagnikKK1/gatekeep';
+})();
+
+/** The verdict a bare `report-fp` is about: this session's latest, or the repository's. */
+async function latestVerdictPath(root: string, session?: string): Promise<string | null> {
+  const dir = verdictDir(root);
+  if (session !== undefined) {
+    const sid = session.slice(0, 8);
+    const names = (await fs.readdir(dir).catch(() => [] as string[])).filter((n) => n.endsWith(`-${sid}.json`)).sort();
+    return names.length ? path.join(dir, names[names.length - 1]!) : null;
+  }
+  const p = path.join(dir, 'latest.json');
+  return existsSync(p) ? p : null;
+}
+
+/**
+ * `gatekeep report-fp` — turn "this finding is wrong" into a fixture someone can act on, in one command.
+ *
+ * A false positive is only worth anything to the maintainer as a reproducer, and reducing one by hand from a private
+ * repository is an afternoon's work that nobody does, which is why the issue tracker is empty and the rules are
+ * tuned on public code that looks nothing like the code people actually get blocked on.
+ *
+ * The command reads the last verdict, takes the files the finding names, redacts them, and — the part that matters —
+ * re-runs the rules over the redacted pair. If the finding no longer fires, the redaction destroyed the evidence and
+ * a weaker one is tried. If none reproduces it, nothing is sent: the alternative is shipping the reporter's real
+ * source under a command whose name promised otherwise.
+ */
+const REDACTION_LADDER: Exclude<RedactionLevel, 'none'>[] = ['full', 'light'];
+
+function findingsOf(v: Verdict): Finding[] { return v.checks.testIntegrity.findings.filter((f) => !f.overridden); }
+
+/** Run the rules over a redacted before/after pair exactly as `test/fixtures.test.ts` does, so the fixture is honest. */
+async function analyzeFixture(before: Record<string, string>, after: Record<string, string>, cfg: GatekeepConfig): Promise<Finding[]> {
+  const changes: FileChange[] = [];
+  for (const p of Object.keys(before)) {
+    if (!(p in after)) changes.push({ path: p, status: 'D', before: before[p]! });
+    else if (before[p] !== after[p]) changes.push({ path: p, status: 'M', before: before[p]!, after: after[p]! });
+  }
+  for (const p of Object.keys(after)) if (!(p in before)) changes.push({ path: p, status: 'A', after: after[p]! });
+  const baseTestFiles = new Map(Object.entries(before).filter(([p]) => isTestFile(p, cfg.rules)));
+  const r = await analyze(changes, cfg.rules, { exists: (p) => p in after, baseTestFiles });
+  return r.findings;
+}
+
+const asExpected = (f: Finding): ExpectedFinding => ({ rule: f.rule, file: f.file, ...(f.test ? { test: f.test } : {}), severity: f.severity });
+
+async function cmdReportFp(args: Args, cwd: string): Promise<number> {
+  const root = await repoRoot(cwd);
+  if (!root) throw new UserError('not inside a git repository');
+  const { cfg } = await configFor(root, null, null);
+
+  const vpath = typeof args.flags.verdict === 'string' ? args.flags.verdict : await latestVerdictPath(root, typeof args.flags.session === 'string' ? args.flags.session : undefined);
+  if (!vpath) throw new UserError('no verdict found for this repository yet; run `gatekeep run` or finish a session first');
+  let v: Verdict;
+  try { v = JSON.parse(await fs.readFile(vpath, 'utf8')) as Verdict; }
+  catch { throw new UserError(`could not read a verdict from ${vpath}`); }
+  if (v.schema !== 'gatekeep.verdict.v1') throw new UserError(`${vpath} is not a gatekeep verdict`);
+
+  const all = findingsOf(v);
+  if (!all.length) throw new UserError(`${vpath} has no findings, so there is no false positive to report`);
+  const rule = typeof args.flags.rule === 'string' ? args.flags.rule : null;
+  const wrong = rule ? all.filter((f) => f.rule === rule) : all.filter((f) => f.severity === 'block');
+  if (!wrong.length) {
+    const have = [...new Set(all.map((f) => f.rule))].join(', ');
+    throw new UserError(rule ? `no "${rule}" finding in ${vpath}; it has: ${have}` : `no blocking findings in ${vpath}; pick one with --rule <rule> (it has: ${have})`);
+  }
+  const target = wrong[0]!;
+  if (!rule && wrong.length > 1) console.log(`${wrong.length} blocking findings; reporting "${target.rule}". Use --rule to pick another.`);
+
+  // The files the finding names, plus the test files it was compared against: the oracle rule's evidence is a
+  // source file *and* the tests whose literals it matched, and a fixture with only one of them proves nothing.
+  const involved = new Set<string>([target.file]);
+  for (const f of all) if (f.rule === target.rule && isTestFile(f.file, cfg.rules)) involved.add(f.file);
+  // A few of the test files the run examined, for context. Capped: a session that touched forty test files would
+  // otherwise produce a fixture nobody reads, and the finding is about one of them.
+  for (const e of v.checks.testIntegrity.examined.slice(0, 3)) if (isTestFile(e.path, cfg.rules)) involved.add(e.path);
+  const files: FpFile[] = [];
+  for (const p of involved) {
+    if (p === '.' || p === '') continue;
+    files.push({ path: p, before: await catFile(root, v.baseTree, p), after: await catFile(root, v.currentTree, p) });
+  }
+  // The oracle rule's evidence is a source line *and* the unchanged test file whose literal it matched. That test
+  // file is not in the diff and not in `examined`, so a fixture built from the finding alone contains no tests, the
+  // rule has nothing to compare against, and the reproduction fails for a reason that has nothing to do with
+  // redaction. Pull in the test files that actually carry the literals the finding named, and only those.
+  if (target.rule === 'test-oracle-in-source' && target.after) {
+    const wanted = new Set(rawLiterals(target.after));
+    const changes: FileChange[] = files.filter((f) => f.after !== undefined).map((f) => ({ path: f.path, status: 'M' as const, before: f.before, after: f.after! }));
+    const baseTests = await baseTestFiles(root, v.baseTree, cfg, changes);
+    let added = 0;
+    for (const [p, text] of baseTests) {
+      if (involved.has(p) || added >= 3) continue;
+      if (![...wanted].some((l) => l && text.includes(l))) continue;
+      files.push({ path: p, before: text, after: text });   // unchanged in both trees: context, not a deletion
+      involved.add(p);
+      added++;
+    }
+  }
+  if (!files.length) throw new UserError(`the "${target.rule}" finding does not name a file that exists in either tree, so there is nothing to reduce`);
+
+  const name = fixtureName(target.rule, files);
+  let fixture: FpFixture | null = null;
+  const tried: string[] = [];
+  const levels: RedactionLevel[] = args.flags.verbatim === true ? ['none'] : REDACTION_LADDER;
+  for (const level of levels) {
+    const { before, after } = level === 'none'
+      ? { before: Object.fromEntries(files.filter((f) => f.before !== undefined).map((f) => [f.path, f.before!])), after: Object.fromEntries(files.filter((f) => f.after !== undefined).map((f) => [f.path, f.after!])) }
+      : await redactFiles(files, level);
+    const got = await analyzeFixture(before, after, cfg);
+    const reproduced = got.some((f) => f.rule === target.rule);
+    tried.push(`${level}: ${reproduced ? 'reproduces' : 'does not reproduce'}`);
+    if (!reproduced) continue;
+    fixture = {
+      name, level, before, after, reproduced,
+      findings: got.map(asExpected),
+      // The point of the fixture is that it fails today: everything the pair produces *except* the rule being
+      // reported. It goes green the moment the false positive is fixed, and no sooner.
+      expected: { findings: got.filter((f) => f.rule !== target.rule).map(asExpected) },
+    };
+    break;
+  }
+  if (!fixture) {
+    console.error(`gatekeep: the "${target.rule}" finding did not survive redaction (${tried.join('; ')}).`);
+    console.error('Nothing was written. A fixture that no longer triggers the rule would waste the maintainer\'s time, and');
+    console.error('shipping your real source under a command called report-fp would be worse. Re-run with --verbatim if you');
+    console.error('have read the files and are willing to publish them as they are.');
+    return 3;
+  }
+
+  const dir = typeof args.flags.out === 'string' ? path.resolve(cwd, args.flags.out) : path.join(repoStateDir(root), 'fp', name);
+  await fs.rm(dir, { recursive: true, force: true });
+  for (const [rel, text] of Object.entries(fixture.before)) { await fs.mkdir(path.dirname(path.join(dir, 'before', rel)), { recursive: true }); await fs.writeFile(path.join(dir, 'before', rel), text); }
+  for (const [rel, text] of Object.entries(fixture.after)) { await fs.mkdir(path.dirname(path.join(dir, 'after', rel)), { recursive: true }); await fs.writeFile(path.join(dir, 'after', rel), text); }
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'expected.json'), JSON.stringify(fixture.expected, null, 2) + '\n');
+
+  const url = issueUrl(REPO_SLUG, { rule: target.rule, version: VERSION, level: fixture.level, message: target.message, fixture, dir });
+  if (args.flags.json === true) { console.log(JSON.stringify({ rule: target.rule, level: fixture.level, dir, name, url, expected: fixture.expected, tried }, null, 2)); return 0; }
+
+  console.log(`Reduced "${target.rule}" to a fixture: ${dir}`);
+  console.log(`  redaction: ${fixture.level}${fixture.level === 'none' ? ' — your source, unredacted, because you asked for --verbatim' : ' (identifiers, paths and comments pseudonymised' + (fixture.level === 'full' ? ', string contents too' : '; string contents kept, because the rule stopped firing without them') + ')'}`);
+  console.log(`  the rule still fires on the redacted pair, and expected.json says it should not — so this fixture fails until it is fixed.`);
+  console.log(`  files: ${Object.keys({ ...fixture.before, ...fixture.after }).join(', ')}`);
+  console.log('');
+  console.log('Read it before you send it. Redaction is mechanical and cannot know what is sensitive in your codebase.');
+  console.log('');
+  if (args.flags['no-open'] === true) { console.log(url); return 0; }
+  const opened = await openUrl(url);
+  console.log(opened ? 'Opened a prefilled issue in your browser.' : 'Open this to file it:');
+  if (!opened) console.log(url);
+  return 0;
+}
+
+/** Best-effort browser open; printing the URL is a fine outcome and the only one on a headless box. */
+async function openUrl(url: string): Promise<boolean> {
+  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+  return new Promise((resolve) => {
+    try {
+      const c = spawn(cmd, [url], { stdio: 'ignore', detached: true });
+      c.on('error', () => resolve(false));
+      c.on('spawn', () => { c.unref(); resolve(true); });
+    } catch { resolve(false); }
+  });
+}
+
 async function cmdUninstall(args: Args, cwd: string): Promise<number> {
   const target = args.flags.global === true ? 'global' : args.flags.shared === true ? 'project-shared' : 'project-local';
   const r = await uninstallClaudeCode(target, cwd);
@@ -891,6 +1065,7 @@ async function main(): Promise<number> {
     case 'protect-tests': return cmdProtectTests(args, cwd);
     case 'calibrate': return cmdCalibrate(args, cwd);
     case 'shadow': return cmdShadow(args, cwd);
+    case 'report-fp': return cmdReportFp(args, cwd);
     case 'uninstall': return cmdUninstall(args, cwd);
     case 'status': return cmdStatus(cwd);
     case 'report': return cmdReport(args, cwd);

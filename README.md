@@ -214,6 +214,38 @@ A block that is right in general and wrong for one change is lifted for that cha
 
 The GitHub Action posts findings as check annotations on the changed lines. Codex CLI hooks are wired but untested. Adapters, the override rules, the Action's inputs, and the verdict format: [docs/integrations.md](docs/integrations.md).
 
+## Reporting a false positive
+
+If a finding is wrong, one command reduces it to a fixture the maintainer can act on, without publishing your code:
+
+```bash
+gatekeep report-fp                      # the last verdict's blocking finding
+gatekeep report-fp --rule test-oracle-in-source
+gatekeep report-fp --no-open --json     # print the URL instead of opening a browser
+```
+
+It takes the files the finding names — plus, for `test-oracle-in-source`, the test file whose literal it matched —
+pseudonymises the identifiers, string contents, comments and paths, and writes a `before/`, `after/` and
+`expected.json` triple in the same layout as [`fixtures/`](fixtures/). `expected.json` lists everything the pair
+produces *except* the rule you are reporting, so the fixture fails today and goes green when it is fixed. Then it
+opens a prefilled issue.
+
+The redaction is checked rather than assumed. After redacting, the rules are re-run over the result: if the finding
+no longer fires, the redaction destroyed the evidence and a weaker level is tried; if none reproduces it, **nothing
+is written and nothing is sent**, because shipping your real source from a command called `report-fp` would be the
+worse failure. `--verbatim` is there if you have read the files and want to send them as they are.
+
+The pseudonyms are consistent and keep the shapes the rules read: `test_charge_vat` stays a pytest test,
+`rate_card_test.go` stays a Go test file, an extension still picks the grammar. What survives looks like this:
+
+```python
+def na3d8b2(ncc8321):
+    if ncc8321 == "redacted/990d75":
+        return 1299
+```
+
+Read it before you send it. Redaction is mechanical and cannot know what is sensitive in your codebase.
+
 ## Configuration
 
 `gatekeep.config.json` at the repo root, all keys optional:
