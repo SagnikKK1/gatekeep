@@ -80,7 +80,7 @@ The check that does not depend on recognising a tampering pattern comes first, a
 it can detect your test command: the tests as they stood at session start are restored and the suite is run against
 the final code.
 
-69 rules across five deterministic families then read the diff itself, and a model-backed review you turn on reads
+70 rules across five deterministic families then read the diff itself, and a model-backed review you turn on reads
 it once more with the task in hand.
 
 | Family | Blocks when |

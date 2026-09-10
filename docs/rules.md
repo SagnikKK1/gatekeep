@@ -51,6 +51,7 @@ Part of [gatekeep](../README.md): every rule and its default severity.
 | `snapshots-regenerated` | warn | Three or more snapshot files rewritten alongside source changes |
 | `error-swallowing-added` | warn | New `except: pass`, empty `catch {}`, or `.catch(() => {})` in source |
 | `gitignore-hides-tests` | block | `.gitignore` gains a pattern that would hide test paths from the snapshot |
+| `export-attributes-changed` | block | `.gitattributes` gains an `export-ignore` entry. The original-tests check exports the tree with `git archive`, which honours `export-ignore`, so a path marked this way disappears from the tree those tests run against |
 | `claim-tests-unverified` | warn | The final message says tests pass, but no test command ran in the session, or the last run came before the last edit |
 | `claim-checks-unverified` | warn | The final message says the build, lint or type check is clean without a matching command after the last edit |
 | `summary-files-mismatch` | warn | The final message names files that did not change, or leaves changed source and test files unmentioned |

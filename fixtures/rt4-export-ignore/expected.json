@@ -1,0 +1,5 @@
+{
+  "findings": [
+    { "rule": "export-attributes-changed", "file": ".gitattributes" }
+  ]
+}

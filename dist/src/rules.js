@@ -56,6 +56,7 @@ export const DEFAULT_SEVERITIES = {
     ...SCOPE_SEVERITIES,
     ...ORACLE_SEVERITIES,
     'gitignore-hides-tests': 'block',
+    'export-attributes-changed': 'block',
     // Model-backed review (opt-in via `judge` in the config). Severities are enforced here, never by the model.
     'judge-test-weakened': 'warn',
     'judge-special-casing': 'warn',
@@ -385,6 +386,14 @@ export async function analyze(changes, cfg = DEFAULT_RULE_CONFIG, opts = {}) {
     findings.push(...oracleFindings(visible, cfg.severities, { isTest: (p) => isTestFile(p, cfg), baseTestFiles: opts.baseTestFiles }));
     // .gitignore patterns that would hide test files from the snapshot (git add -A honors them)
     for (const c of visible) {
+        // `git archive` honours `export-ignore`, and the original-tests check exports the tree with it. A path marked
+        // export-ignore during the session vanishes from the tree those tests run against.
+        if (/(^|\/)\.gitattributes$/.test(c.path) && c.after !== undefined) {
+            const was = new Set((c.before ?? '').split('\n').map((l) => l.trim()));
+            const added = c.after.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#') && !was.has(l) && /\bexport-ignore\b/.test(l));
+            if (added.length > 0 && sev('export-attributes-changed') !== 'off')
+                findings.push({ rule: 'export-attributes-changed', severity: sev('export-attributes-changed'), file: c.path, message: `.gitattributes now marks paths export-ignore, which removes them from the tree the original tests are run against: ${added.slice(0, 3).join(', ')}` });
+        }
         if (!/(^|\/)\.gitignore$/.test(c.path) || c.after === undefined)
             continue;
         const before = new Set((c.before ?? '').split('\n').map((l) => l.trim()));

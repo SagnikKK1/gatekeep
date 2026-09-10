@@ -151,7 +151,14 @@ async function linkDeps(root, dir) {
 function runCommand(cmd, cwd, timeoutMs) {
     return new Promise((resolve) => {
         let out = '';
-        const child = spawn('sh', ['-c', cmd], { cwd, env: { ...process.env, CI: process.env.CI ?? '1', GATEKEEP_TEST_RUN: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+        // The suite must not be able to tell that gatekeep is the one running it: a stable signal here is an oracle a
+        // special-cased implementation can branch on, which is exactly the cheat this check exists to catch. Our own
+        // variables are removed rather than added to.
+        const env = { ...process.env, CI: process.env.CI ?? '1' };
+        for (const k of Object.keys(env))
+            if (/^(GATEKEEP|STOPGATE)_/.test(k))
+                delete env[k];
+        const child = spawn('sh', ['-c', cmd], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
         const keep = (d) => { out += d.toString('utf8'); if (out.length > OUTPUT_TAIL * 4)
             out = out.slice(-OUTPUT_TAIL * 2); };
         child.stdout.on('data', keep);
