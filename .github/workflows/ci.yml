@@ -44,34 +44,24 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
-      id-token: write        # npm provenance
+      id-token: write        # the OIDC token npm trusted publishing authenticates with
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # Trusted publishing needs Node >= 22.14 and npm >= 11.5.1; Node 22 still bundles npm 10, so npm is upgraded
+      # explicitly. The test matrix stays on 20 and 22, because that is what users actually run gatekeep on.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+      - run: npm install -g npm@latest
       - run: npm ci
-
-      - name: Is a release configured?
-        id: gate
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "${NPM_TOKEN:-}" ]; then
-            echo 'No NPM_TOKEN secret, so nothing was published. Add one (an npm automation token) to turn releases on.'
-            echo 'go=false' >> "$GITHUB_OUTPUT"
-          else
-            echo 'go=true' >> "$GITHUB_OUTPUT"
-          fi
 
       # Only what npm actually serves counts: the `files` list in package.json plus the sources it is built from.
       # A change under docs/ or test/ is not a new release.
       - name: Does this push change what npm serves?
         id: scope
-        if: steps.gate.outputs.go == 'true'
         run: |
           before='${{ github.event.before }}'
           if [ -z "$before" ] || [ "$before" = '0000000000000000000000000000000000000000' ] || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
@@ -109,8 +99,6 @@ jobs:
       - name: Publish
         if: steps.scope.outputs.publish == 'true'
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # `v1` is what `uses: SagnikKK1/gatekeep@v1` resolves to, so it has to move with every release or the Action
       # goes stale on its own — which is what happened: it sat 22 commits back while npm sat 57 back.
