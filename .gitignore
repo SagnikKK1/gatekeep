@@ -9,3 +9,8 @@ todos/
 # Article cover images: uploaded to the publishing platform, not served from the repo.
 # assets/block.svg stays tracked, it is embedded in the README.
 assets/article-cover*
+
+# Never commit: local secrets. The CI token lives in GitHub Actions secrets, not here.
+.env
+.env.*
+!.env.example
