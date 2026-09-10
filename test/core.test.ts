@@ -12,7 +12,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { codeOnly, literalsOf, addedLines, rawLiterals } from '../src/oracle.js';
+import { codeOnly, literalsOf, addedLines, rawLiterals, conditionText, oracleFindings } from '../src/oracle.js';
 import { withTree, walk, descendants, ancestor, countErrors, line, unquote, tokens, named, kids, normaliseImportTypes } from '../src/parser.js';
 import { git, repoRoot, headTree, isShallow, resolveTree, lsTree, catFile, diffTrees, EMPTY_TREE, GitError } from '../src/git.js';
 
@@ -26,6 +26,35 @@ test('codeOnly strips comments and string bodies, which is what keeps the oracle
   assert.ok(codeOnly('if x == 10:  # note', true).includes('10'));
   // A `#` inside a string is not a comment.
   assert.ok(codeOnly('url = "http://a/#frag"', true).length > 0);
+});
+
+test('conditionText keeps the branch and drops what the branch returns', () => {
+  // The false positive this exists for: the literal is the return value, not the thing being tested.
+  assert.equal(conditionText('if (raw?.includes(marker)) return { command: "pytest -q" };'), 'raw?.includes(marker)');
+  assert.equal(conditionText('} else if (a(b)) return "z";'), 'a(b)');
+  // Python and Ruby stop at the colon; Go and Rust at the brace.
+  assert.equal(conditionText('if x == "pytest -q":').trim(), 'x == "pytest -q"');
+  assert.equal(conditionText('if x == "abc" {').trim(), 'x == "abc"');
+  assert.equal(conditionText('unless name == "release" then').trim(), 'name == "release"');
+  // A colon inside a literal or a subscript is not the end of the condition.
+  assert.equal(conditionText('if d["a:b"] == "x:y":').trim(), 'd["a:b"] == "x:y"');
+  // `case` and `when` really do compare against the literal, so they are returned whole.
+  assert.match(conditionText('case "pytest -q":'), /pytest -q/);
+  // No conditional keyword: the caller gets the line back rather than an empty string.
+  assert.equal(conditionText('const x = "y";'), 'const x = "y";');
+  // An unbalanced condition (continued on the next line) keeps what it has rather than dropping it.
+  assert.equal(conditionText('if (a && b(c,').trim(), 'a && b(c,');
+});
+
+test('a guarded return of a domain constant is not an oracle, but a branch on one still is', async () => {
+  const tests = new Map([['test/x.test.ts', 'assert.equal(detect(x).command, "pytest -q");\n']]);
+  const run = (after: string) => oracleFindings(
+    [{ path: 'src/detect.ts', status: 'M', before: 'export function detect(a) {\n  return null;\n}\n', after }],
+    {}, { isTest: (p) => p.startsWith('test/'), baseTestFiles: tests });
+  // Returning the value the tests assert on is how a correct implementation looks.
+  assert.deepEqual(run('export function detect(a) {\n  if (a.has(m)) return { command: "pytest -q" };\n  return null;\n}\n'), []);
+  // Comparing against it is the thing the rule is for, and still fires.
+  assert.equal(run('export function detect(a) {\n  if (a === "pytest -q") return true;\n  return null;\n}\n').length, 1);
 });
 
 test('literalsOf and rawLiterals read the literals a branch could compare against', () => {

@@ -149,6 +149,83 @@ function lineLiterals(text) {
         out.push(m[0].replace(/\s+/g, ''));
     return out;
 }
+/**
+ * The condition part of a line that carries a conditional keyword.
+ *
+ * `if (raw.includes(marker)) return { command: "pytest -q" }` does not branch on `"pytest -q"` — it branches on
+ * `raw.includes(marker)` and *returns* a domain constant that the tests naturally also assert on. Counting every
+ * literal on the line made every single-line guarded return whose value appears in a test look like an oracle, which
+ * is this rule's remaining false-positive shape: `install.ts` returning `pytest -q` was flagged as fitted to the
+ * tests that assert `pytest -q` is what gets detected.
+ *
+ * `case`/`when`/`match` are the exception and are returned whole: `case "pytest -q":` really is a comparison
+ * against the literal.
+ */
+export function conditionText(line) {
+    const m = COND_KW.exec(line);
+    if (!m)
+        return line;
+    const kw = m[2];
+    let i = m.index + m[0].length;
+    if (kw === 'case' || kw === 'when')
+        return line.slice(i);
+    while (i < line.length && /\s/.test(line[i]))
+        i++;
+    if (line[i] === '(') {
+        let depth = 0, q = null;
+        for (let j = i; j < line.length; j++) {
+            const ch = line[j];
+            if (q) {
+                if (ch === '\\') {
+                    j++;
+                    continue;
+                }
+                if (ch === q)
+                    q = null;
+                continue;
+            }
+            if (ch === '"' || ch === "'" || ch === '`') {
+                q = ch;
+                continue;
+            }
+            if (ch === '(')
+                depth++;
+            else if (ch === ')') {
+                depth--;
+                if (depth === 0)
+                    return line.slice(i + 1, j);
+            }
+        }
+        return line.slice(i + 1); // unbalanced: a condition continued on the next line, minus its open paren
+    }
+    // Python/Ruby `if x:` and Go/Rust `if x {`. Stop at the first terminator outside quotes and brackets.
+    let depth = 0, q = null;
+    for (let j = i; j < line.length; j++) {
+        const ch = line[j];
+        if (q) {
+            if (ch === '\\') {
+                j++;
+                continue;
+            }
+            if (ch === q)
+                q = null;
+            continue;
+        }
+        if (ch === '"' || ch === "'" || ch === '`') {
+            q = ch;
+            continue;
+        }
+        if (ch === '(' || ch === '[')
+            depth++;
+        else if (ch === ')' || ch === ']')
+            depth--;
+        else if (depth === 0 && (ch === ':' || ch === '{'))
+            return line.slice(i, j);
+        else if (depth === 0 && line.startsWith(' then', j))
+            return line.slice(i, j);
+    }
+    return line.slice(i);
+}
 export function oracleFindings(changes, severities, opts) {
     const severity = severities['test-oracle-in-source'] ?? ORACLE_SEVERITIES['test-oracle-in-source'];
     if (severity === 'off')
@@ -210,15 +287,18 @@ export function oracleFindings(changes, severities, opts) {
             const text = codeOnly(raw, py);
             if (!text.trim())
                 continue;
-            const lits = lineLiterals(text).filter((l) => known.has(l) && !beforeText.includes(l));
+            const isCond = COND_KW.test(text);
+            // Only what the branch actually tests. A literal in the guarded return is a return value, not an oracle.
+            const cond = isCond ? conditionText(text) : text;
+            const lits = lineLiterals(cond).filter((l) => known.has(l) && !beforeText.includes(l));
             // Distinct values, up to shape: a line comparing against both `0` and `[0]` shares one constant with every
             // test, not two, and a pair of single digits is arithmetic rather than a fingerprint of one test case.
-            const all = [...new Set(rawLiterals(text))].filter((l) => !beforeText.includes(l));
-            const shared = COND_KW.test(text)
+            const all = [...new Set(rawLiterals(cond))].filter((l) => !beforeText.includes(l));
+            const shared = isCond
                 ? testCases.map((tc) => all.filter((l) => tc.has(l))).find((m) => distinctValues(m).length >= 2 && m.some((l) => !/^[0-5]$/.test(canonical(l))))
                 : undefined;
             // 1. a condition comparing against a value only the tests knew
-            if (lits.length > 0 && COND_KW.test(text)) {
+            if (lits.length > 0 && isCond) {
                 hits.push({ n, text, rank: 0, why: `branches on ${lits.slice(0, 3).map((l) => JSON.stringify(l)).join(', ')}, which the tests use and this file did not` });
                 // 1b. a condition whose constants all come from one test case
             }
@@ -226,8 +306,8 @@ export function oracleFindings(changes, severities, opts) {
                 hits.push({ n, text, rank: 0, why: `branches on ${shared.slice(0, 4).map((l) => JSON.stringify(l)).join(', ')}, the constants of a single test case` });
                 // 2. a table keyed by values only the tests knew
             }
-            else if (new Set(lits).size >= 3 && /[[{]/.test(text)) {
-                const u = [...new Set(lits)];
+            else if (new Set(lineLiterals(text).filter((l) => known.has(l) && !beforeText.includes(l))).size >= 3 && /[[{]/.test(text)) {
+                const u = [...new Set(lineLiterals(text).filter((l) => known.has(l) && !beforeText.includes(l)))];
                 hits.push({ n, text, rank: 1, why: `maps ${u.length} value(s) the tests use (${u.slice(0, 3).map((l) => JSON.stringify(l)).join(', ')}) that this file did not` });
                 // 3. the implementation reads the test runner's environment
             }
