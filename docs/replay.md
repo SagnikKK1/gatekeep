@@ -142,11 +142,15 @@ is a line in a report rather than a block, and its 19-of-55 catch rate on Imposs
 unaffected — that was measured on agent runs, not on this corpus. But **"zero false positives" is retracted, not
 merely scoped.** The honest statement is that it was never measured on data it was not tuned against until today.
 
-**Go table-driven subtests read as deleted tests.** Findings of the form `Test "TestValidateGrammarSchema >
-<tt.name>" removed`, where the subtest name is a variable rather than a literal, account for **54 of ollama's 189
-`test-deleted` findings** and appear in no other repository in either set. cobra, the Go repository in the tuning
-set, barely uses table-driven tests, so the rules were never fitted against this shape. This is the clearest
-single defect the exercise turned up.
+**A defect I thought I had found, and had not. Retracted 2026-09-10, same day.** 54 of ollama's 189 `test-deleted`
+findings name the removed subtest with a variable rather than a literal (`Test "TestValidateGrammarSchema >
+<tt.name>" removed`), a pattern absent from every other repository in both sets. That looked like a Go extractor
+defect. It is not: sampled against the real history, the parent test function is present before the commit, absent
+after, and not moved elsewhere. They are true positives on genuine removals during heavy refactoring. 44 of the 54
+block; the other 10 are already downgraded to `warn` by the consolidation heuristic, which is that heuristic
+working. The only real fault is cosmetic, rendering an unresolved subtest name as `<tt.name>` in a report a human
+has to read. **What the variance actually shows is that a repository's blocking rate tracks how much it rewrites
+its own tests, not how well the rules are tuned.**
 
 **Ten rules that never fire in-sample do fire out of sample, eight of them blocking.** `mock-on-changed-module`
 0 → 43, `assertion-unreachable` 0 → 11, `retry-added` 0 → 7, `secret-introduced` 0 → 3, `registry-changed` 0 → 3,
