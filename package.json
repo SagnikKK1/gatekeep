@@ -1,6 +1,6 @@
 {
   "name": "gatekeep-agent",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Independent verification gate for AI coding agents: blocks the agent from declaring done when it tampered with tests.",
   "type": "module",
   "bin": {
