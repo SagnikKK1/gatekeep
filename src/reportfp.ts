@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { langFor } from './lang.js';
 import { withTree, walk, type Lang, type SyntaxNode } from './parser.js';
+import { looksLikeSecret, secretPatternFor } from './scope.js';
 
 /**
  * Builds a redacted, self-contained reproducer for a false positive, so reporting one costs a command instead of an
@@ -23,6 +24,8 @@ export type RedactionLevel = 'full' | 'light' | 'none';
  * nothing: every one of them is a language builtin or a test-framework name.
  */
 const KEEP = new Set([
+  // credential key names: not secret themselves, and the generic-secret pattern needs them to still match
+  'api_key', 'apiKey', 'secret_key', 'secretKey', 'client_secret', 'access_token', 'auth_token', 'password', 'passwd', 'private_key', 'token', 'secret',
   // structural
   'self', 'this', 'super', 'cls', 'main', 'args', 'kwargs', 'err', 'error', 'ok', 'nil', 'None', 'True', 'False',
   // python
@@ -78,7 +81,40 @@ export function pseudonym(name: string): string {
  */
 export function pseudoString(s: string): string {
   if (s === '') return s;
-  return `redacted/${tag(s)}`;
+  if (looksLikeSecret(s)) return sameShape(s);
+  return `redacted/${tag(s)}${tag(s + '.')}`;
+}
+
+/**
+ * A credential-shaped literal, replaced character by character with one of the same shape.
+ *
+ * This closes the hole that dogfooding found: `secret-introduced`'s evidence *is* the secret, so full redaction
+ * destroyed the finding and the command fell back to a level that kept the literal — which would have helped
+ * someone paste a live AWS key into a public issue. Same character classes, same lengths, same punctuation, so
+ * every pattern that matched the original still matches, and none of the original characters survive. Derived from
+ * a hash of the input, so the same secret redacts the same way in every file of the fixture.
+ */
+export function sameShape(s: string): string {
+  const h = createHash('sha256').update('shape:' + s).digest();
+  let i = 0;
+  const pick = (set: string) => set[h[i++ % h.length]! % set.length]!;
+  const scrambled = [...s].map((ch) => {
+    if (/[A-Z]/.test(ch)) return pick('ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+    if (/[a-z]/.test(ch)) return pick('abcdefghijklmnopqrstuvwxyz');
+    if (/[0-9]/.test(ch)) return pick('0123456789');
+    return ch;                                  // separators, and the shape they give
+  }).join('');
+  // Scrambling every character also destroys the vendor prefix the pattern keys on — `AKIA…` stops being an AWS
+  // key at all — and then the finding does not reproduce and the whole fixture is refused. Restore the shortest
+  // leading run that makes it match again. That run is a published vendor prefix (`AKIA`, `ghp_`, `sk-ant-`), which
+  // is not the secret part: the entropy after it is, and none of it survives.
+  const re = secretPatternFor(s);
+  if (!re || re.test(scrambled)) return scrambled;
+  for (let keep = 1; keep <= Math.min(s.length - 1, 24); keep++) {
+    const cand = s.slice(0, keep) + scrambled.slice(keep);
+    if (re.test(cand)) return cand;
+  }
+  return scrambled;
 }
 
 interface Edit { start: number; end: number; text: string }
@@ -128,15 +164,19 @@ export async function redactSource(p: string, source: string, level: Exclude<Red
           return false;
         }
         if (STRING_CONTENT_TYPES.has(n.type)) {
-          if (level === 'full') { edits.push({ start: n.startIndex, end: n.endIndex, text: pseudoString(source.slice(n.startIndex, n.endIndex)) }); contentSpans.push({ start: n.startIndex, end: n.endIndex }); }
+          const body = source.slice(n.startIndex, n.endIndex);
+          // A credential is replaced at every level. `light` exists to keep literals the rules match on, and a
+          // same-shape replacement keeps matching without keeping the credential.
+          if (level === 'full' || looksLikeSecret(body)) { edits.push({ start: n.startIndex, end: n.endIndex, text: pseudoString(body) }); contentSpans.push({ start: n.startIndex, end: n.endIndex }); }
           return false;
         }
         if (STRING_TYPES.has(n.type)) {
           // A grammar that exposes content children is handled by those; only redact wholesale when it does not.
           const hasContent = n.namedChildren.some((c) => c && (STRING_CONTENT_TYPES.has(c.type) || c.type === 'template_substitution' || c.type === 'interpolation'));
-          if (!hasContent && level === 'full') {
-            const span = innerSpan(n, source);
-            if (span && span.end > span.start) edits.push({ start: span.start, end: span.end, text: pseudoString(source.slice(span.start, span.end)) });
+          const span0 = innerSpan(n, source);
+          const body0 = span0 ? source.slice(span0.start, span0.end) : '';
+          if (!hasContent && (level === 'full' || looksLikeSecret(body0))) {
+            if (span0 && span0.end > span0.start) edits.push({ start: span0.start, end: span0.end, text: pseudoString(body0) });
             return false;
           }
           return true;
@@ -160,6 +200,7 @@ const PLAIN_KEEP = /^(on|jobs|steps|run|uses|with|name|if|needs|env|true|false|n
 /** For files with no grammar (YAML, TOML, Markdown, plain text): word-level, keeping the structural vocabulary. */
 function redactPlain(source: string, level: Exclude<RedactionLevel, 'none'>): string {
   return source.replace(/[A-Za-z_][A-Za-z0-9_.-]*/g, (w) => {
+    if (looksLikeSecret(w)) return sameShape(w);
     if (PLAIN_KEEP.test(w) || KEEP.has(w)) return w;
     if (level === 'light' && /^[a-z-]+$/.test(w)) return w;
     return pseudonym(w.replace(/[.-]/g, '_'));

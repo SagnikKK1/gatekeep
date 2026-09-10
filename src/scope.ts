@@ -54,6 +54,20 @@ const SECRET_PATTERNS: [RegExp, string][] = [
   [/AccountKey=[A-Za-z0-9+/=]{40,}/, 'Azure storage account key'],
   [/\bAGE-SECRET-KEY-1[A-Z0-9]{50,}\b/, 'age secret key'],
 ];
+/**
+ * Does this text carry something credential-shaped? Used by `gatekeep report-fp`, which must never put a real
+ * credential in a fixture: a secret finding's evidence *is* the secret, so redaction has to replace it with
+ * something of the same shape rather than keep it or destroy it.
+ */
+export function looksLikeSecret(text: string): boolean {
+  return secretPatternFor(text) !== null || GENERIC_SECRET.test(text);
+}
+
+/** The pattern a credential-shaped string matched, so a replacement can be checked against the same one. */
+export function secretPatternFor(text: string): RegExp | null {
+  return SECRET_PATTERNS.find(([re]) => re.test(text))?.[0] ?? null;
+}
+
 const GENERIC_SECRET = /\b(api[_-]?key|secret[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|password|passwd|private[_-]?key|secret)\b\s*[:=]\s*['"`]([^'"`\s]{16,})['"`]/i;
 /**
  * Vendors publish credential-shaped strings in their own documentation and mark them as such. AWS's

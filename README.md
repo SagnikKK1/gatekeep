@@ -244,6 +244,11 @@ def na3d8b2(ncc8321):
         return 1299
 ```
 
+A credential-shaped literal is a special case, because a `secret-introduced` finding's evidence *is* the secret.
+It is replaced at every level by a synthetic one of the same shape — same length, same character classes, the
+published vendor prefix (`AKIA`, `ghp_`, `sk-ant-`) restored so the pattern still matches, and none of the entropy
+kept. The fixture reproduces; the key does not leave your machine.
+
 **Numbers are not redacted**, deliberately: almost every rule here counts, compares or thresholds on them, and
 replacing them is the fastest way to make a fixture stop reproducing. If your finding involves a number you cannot
 publish, edit the fixture by hand before filing — the files are written to disk first and the issue is only opened

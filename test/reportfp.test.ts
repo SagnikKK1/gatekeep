@@ -8,7 +8,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pseudonym, pseudonymPath, pseudoString, redactSource, redactFiles, fixtureName, issueUrl } from '../src/reportfp.js';
+import { pseudonym, pseudonymPath, pseudoString, sameShape, redactSource, redactFiles, fixtureName, issueUrl } from '../src/reportfp.js';
+import { looksLikeSecret } from '../src/scope.js';
 import { isTestFile, DEFAULT_RULE_CONFIG } from '../src/rules.js';
 import { langFor } from '../src/lang.js';
 
@@ -89,6 +90,30 @@ test('redactFiles renames the paths as well as the contents, in both trees', asy
   assert.equal(bp, ap, 'one file, one redacted path in both trees');
   assert.notEqual(bp, 'src/billing.py');
   assert.ok(bp!.endsWith('.py'));
+});
+
+test('a credential is replaced by one of the same shape, at every redaction level', async () => {
+  // The hole this closes: `secret-introduced`'s evidence is the secret, so full redaction destroyed the finding and
+  // the command fell back to a level that kept the literal — which would have put a live key in a public issue.
+  const key = 'AKIA' + 'QZ7TBRWXYVCDMNPK';
+  const fake = sameShape(key);
+  assert.notEqual(fake, key, 'none of the entropy survives');
+  assert.equal(fake.length, key.length);
+  assert.ok(looksLikeSecret(fake), 'but it still matches the pattern, or the fixture proves nothing');
+  assert.ok(fake.startsWith('AKIA'), 'the published vendor prefix is restored; the secret part is not');
+  assert.equal(sameShape(key), fake, 'stable, so one secret redacts the same way across the fixture');
+  for (const other of ['ghp_' + 'abcdefghijklmnopqrstuvwxyz0123456789', 'sk-ant-' + 'abcdefghijklmnopqrstuvwxyz']) {
+    const f = sameShape(other);
+    assert.notEqual(f, other);
+    assert.ok(looksLikeSecret(f), other);
+  }
+  // `light` keeps ordinary literals but must not keep this one.
+  const src = `KEY = "${key}"\n`;
+  for (const level of ['full', 'light'] as const) {
+    const out = await redactSource('src/conf.py', src, level);
+    assert.ok(!out.includes(key), `${level} leaked the key: ${out}`);
+    assert.ok(looksLikeSecret(out), `${level} destroyed the finding: ${out}`);
+  }
 });
 
 test('pseudoString and fixtureName are stable and safe to put in a path', () => {
