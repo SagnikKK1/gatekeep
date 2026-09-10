@@ -6,3 +6,6 @@ dist/**/*.tsbuildinfo
 linkedinposts/
 oauthtoken.txt
 todos/
+# Article cover images: uploaded to the publishing platform, not served from the repo.
+# assets/block.svg stays tracked, it is embedded in the README.
+assets/article-cover*
