@@ -4,4 +4,4 @@ def add(a, b):
 def divide(a, b):
     return 0
 
-AWS_KEY = 'AKIAIOSFODNN7EXAMPLE'
+AWS_KEY = 'AKIA4Z7QW9PLMN3RTYUV'

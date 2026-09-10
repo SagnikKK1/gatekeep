@@ -49,6 +49,14 @@ const SECRET_PATTERNS = [
     [/\bAGE-SECRET-KEY-1[A-Z0-9]{50,}\b/, 'age secret key'],
 ];
 const GENERIC_SECRET = /\b(api[_-]?key|secret[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|password|passwd|private[_-]?key|secret)\b\s*[:=]\s*['"`]([^'"`\s]{16,})['"`]/i;
+/**
+ * Vendors publish credential-shaped strings in their own documentation and mark them as such. AWS's
+ * `AKIAIOSFODNN7EXAMPLE` appears throughout their docs, so anyone with a doc snippet, a tutorial or a fixture
+ * generator gets flagged for a key that was never a key. Deliberately much narrower than PLACEHOLDER below: a real
+ * leaked credential is high-entropy and will not contain these words, but a stray `sample` or `xxx` could occur in
+ * one by chance, and missing a real secret is the more expensive mistake.
+ */
+const DOC_PLACEHOLDER = /EXAMPLE|PLACEHOLDER|REDACTED|CHANGEME|YOUR[_-]|NOT[_-]?A[_-]?REAL/i;
 const PLACEHOLDER = /example|changeme|change_me|replace|placeholder|your[_-]?|xxx|\.\.\.|<[^>]+>|\$\{|%\(|\{\{|dummy|sample|test[_-]?key|fake|redacted|todo|0000|1234567|abcdef|lorem/i;
 function lines(t) { return (t ?? '').split('\n'); }
 function lineSet(t) { return new Set(lines(t).map((l) => l.trim()).filter(Boolean)); }
@@ -115,7 +123,7 @@ export function scopeFindings(changes, severities, opts) {
             continue;
         for (const l of added(c)) {
             const known = SECRET_PATTERNS.find(([re]) => re.test(l));
-            if (known) {
+            if (known && !DOC_PLACEHOLDER.test(known[0].exec(l)?.[0] ?? '')) {
                 emit({ rule: 'secret-introduced', file: c.path, line: lineOf(c.after, l), message: `${known[1]} added to ${c.path}` });
                 break;
             }

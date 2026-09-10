@@ -76,6 +76,12 @@ export function globToRegExp(glob) {
  * `tests/fixtures/` is deliberately not here: deleting a data file a suite loads is still worth reporting, and the
  * support-file rule already covers it without treating the file as a test.
  */
+/**
+ * Fixture data is an input to a test suite, not a test suite. Files here are never run, so treating them as tests
+ * means every deliberately-broken sample in them reads as a weakened test. This excludes them from the test family
+ * only; the scope and integrity rules still scan them, so a secret or a typosquat hidden under `fixtures/` is
+ * still caught.
+ */
 export const TEST_FIXTURE_GLOBS = ['**/__tests__/fixtures/**', '**/__fixtures__/**', '**/testdata/**'];
 export const DEFAULT_TEST_GLOBS = [
     '**/test_*.py', '**/*_test.py', '**/tests/**/*.py', '**/test/**/*.py',

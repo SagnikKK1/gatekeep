@@ -1,0 +1,9 @@
+{
+  "$schema": "./docs/config.schema.json",
+
+  "// ignore": "This repository is unusual: fixtures/ holds before/after trees that deliberately contain the exact things the gate looks for, including hard-coded secrets, a typosquatted dependency, a hostile .npmrc and a tampered gatekeep.config.json. docs/corpus/ holds run records whose finding messages quote those same strings back, and scripts/gen_fixtures.py is the generator that writes all of it, so it contains a sample AWS key and a PEM header inline. Scanning either as if it were product code makes the gate block its own commits. These paths are ignored here rather than in the shipped defaults, because a blanket fixtures/ exclusion would give every other user a place to hide a cheat.",
+  "ignore": ["fixtures/**", "docs/corpus/**", "scripts/gen_fixtures.py"],
+
+  "// testCommand": "Left off deliberately. The suite takes ~35 s and the e2e another ~40 s, which is too slow to re-run inside every Stop hook; CI runs both on every push instead.",
+  "testCommand": null
+}

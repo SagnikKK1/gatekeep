@@ -402,7 +402,10 @@ export async function analyze(changes, cfg = DEFAULT_RULE_CONFIG, opts = {}) {
         if (!/(^|\/)\.gitignore$/.test(c.path) || c.after === undefined)
             continue;
         const before = new Set((c.before ?? '').split('\n').map((l) => l.trim()));
-        const hiding = c.after.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#') && !before.has(l) && /(^|\/)(tests?|__tests__|spec|specs)\/?(\*\*)?$|test_\*|_test\.|\.(test|spec)\.|\*\.py$|\*\.(ts|js)$|^\*$/.test(l));
+        // A pattern that only covers paths the gate already ignores hides nothing from it. `dist/test/` is build
+        // output, not a test suite, and counting it made the rule fire on an ordinary .gitignore tidy-up.
+        const alreadyIgnored = (l) => matchesAny(l.replace(/^\/+/, '').replace(/\/+$/, '') + '/x', cfg.ignoreGlobs);
+        const hiding = c.after.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#') && !before.has(l) && !alreadyIgnored(l) && /(^|\/)(tests?|__tests__|spec|specs)\/?(\*\*)?$|test_\*|_test\.|\.(test|spec)\.|\*\.py$|\*\.(ts|js)$|^\*$/.test(l));
         if (hiding.length > 0 && sev('gitignore-hides-tests') !== 'off')
             findings.push({ rule: 'gitignore-hides-tests', severity: sev('gitignore-hides-tests'), file: c.path, message: `.gitignore now hides test paths from the snapshot: ${hiding.slice(0, 3).join(', ')}` });
     }
