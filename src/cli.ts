@@ -947,7 +947,8 @@ async function cmdReportFp(args: Args, cwd: string): Promise<number> {
   console.log(`  the rule still fires on the redacted pair, and expected.json says it should not — so this fixture fails until it is fixed.`);
   console.log(`  files: ${Object.keys({ ...fixture.before, ...fixture.after }).join(', ')}`);
   console.log('');
-  console.log('Read it before you send it. Redaction is mechanical and cannot know what is sensitive in your codebase.');
+  console.log('Numbers are kept: most rules count or compare on them, and replacing them is the quickest way to stop a');
+  console.log('fixture reproducing. Read it before you send it — redaction cannot know what is sensitive in your codebase.');
   console.log('');
   if (args.flags['no-open'] === true) { console.log(url); return 0; }
   const opened = await openUrl(url);

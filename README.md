@@ -244,6 +244,11 @@ def na3d8b2(ncc8321):
         return 1299
 ```
 
+**Numbers are not redacted**, deliberately: almost every rule here counts, compares or thresholds on them, and
+replacing them is the fastest way to make a fixture stop reproducing. If your finding involves a number you cannot
+publish, edit the fixture by hand before filing — the files are written to disk first and the issue is only opened
+after.
+
 Read it before you send it. Redaction is mechanical and cannot know what is sensitive in your codebase.
 
 ## Configuration
