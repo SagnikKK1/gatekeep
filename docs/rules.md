@@ -55,6 +55,7 @@ Part of [gatekeep](../README.md): every rule and its default severity.
 | `claim-checks-unverified` | warn | The final message says the build, lint or type check is clean without a matching command after the last edit |
 | `summary-files-mismatch` | warn | The final message names files that did not change, or leaves changed source and test files unmentioned |
 | `history-rewritten` | block | `git commit --amend`, force push, rebase, `reset --hard`, exclude-file writes, or a stash that was never restored during the session |
+| `claims-not-recorded` | warn | The agent made a claim with no way to check it: a final message, a session that changed something, and no recorded tool calls or readable transcript. Says the four claims rules did not run rather than letting silence read as a pass. Reported once per session |
 | `protected-path-edited` | warn | A file under a protected path changed: migrations, auth, payments, billing, infrastructure and container definitions by default (CI workflows have their own rules); set `protectedPaths` or `extraProtectedPaths` in the config. Suppressed entirely when the session's task statement names the directory or file, since the human asked for that edit; set it to `block` for repositories where those paths need a second pair of eyes |
 | `lockfile-changed-alone` | warn | A lockfile changed with no change to its manifest |
 | `dependency-added` | warn | A new dependency in `package.json`, `pyproject.toml`, `requirements*.txt`, `Pipfile`, `go.mod`, `Cargo.toml` or `Gemfile` |

@@ -9,6 +9,7 @@ export const CLAIM_SEVERITIES = {
     'claim-checks-unverified': 'warn',
     'summary-files-mismatch': 'warn',
     'history-rewritten': 'block',
+    'claims-not-recorded': 'warn',
 };
 const TEST_CMD = /\b(pytest|py\.test|python3? -m (pytest|unittest)|python3? [\w.\/-]*tests?[\w.\/-]*\.py|unittest|jest|vitest|mocha|ava\b|tap\b|node --test|npm (run )?test|yarn test|pnpm test|bun test|deno test|go test|cargo test|mvn (test|verify)|gradle\w* (test|check)|dotnet test|phpunit|rspec|tox\b|nox\b|make (test|check)|nose2?|karma|cypress run|playwright test)\b/;
 const BUILD_CMD = /\b((npm|pnpm|yarn|bun) (run )?build|tsc\b|cargo build|go build|make\b|gradle\w* (build|assemble)|mvn (package|compile|install)|dotnet build|webpack|vite build|next build|esbuild|rollup|python -m build|setup\.py build)\b/;
@@ -153,6 +154,40 @@ export async function readTranscript(p) {
     catch {
         return null;
     }
+}
+/**
+ * Tool names, across harnesses. The recorder normalises what it can — a `command` makes an event a shell call
+ * whatever the tool is called — but the edit/read split has to come from the name, and every harness spells it
+ * differently. Unknown names are treated as reads: crediting an unknown tool with an edit would make every test
+ * run look stale.
+ */
+export function classifyTool(name) {
+    if (EDIT_TOOLS.has(name) || READ_TOOLS.has(name))
+        return EDIT_TOOLS.has(name) ? 'edit' : 'read';
+    return /(edit|write|patch|create|update|replace|insert|append|delete|remove|move|rename)/i.test(name) ? 'edit' : 'read';
+}
+/**
+ * The same `Transcript` shape, built from our own recorder rather than a harness's transcript file. The bash-write
+ * derivation below is deliberately identical to the transcript parser's: if the two disagreed about when an edit
+ * happened, the same session would get different findings depending on which source was available.
+ */
+export function transcriptFromTools(tools, finalText) {
+    const events = [];
+    let i = 0;
+    for (const t of tools) {
+        if (typeof t.command === 'string' && t.command !== '') {
+            events.push({ i: i++, kind: 'bash', command: t.command });
+            const shell = shellOnly(t.command);
+            const inlinePyWrites = INLINE_PY.test(shell) && INLINE_PY_WRITES.test(t.command);
+            if (BASH_WRITES.test(shell) || inlinePyWrites)
+                events.push({ i: i++, kind: 'edit', command: t.command, file: redirectTarget(t.command) });
+            continue;
+        }
+        if (t.file === undefined)
+            continue;
+        events.push({ i: i++, kind: classifyTool(t.tool), file: t.file });
+    }
+    return { events, finalText, recognized: true };
 }
 const PATH_RE = /(?:^|[\s`'"(\[])((?:[\w.@-]+\/)+[\w.@-]+\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|mts|cts|go|rs|java|kt|rb|php|cs|swift|scala|json|ya?ml|toml|cfg|ini|sh|md|sql|html|css|scss|vue|svelte)|[\w.@-]+\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|mts|cts|go|rs|java|kt|rb|php|cs|swift|scala))(?=$|[\s`'"):\],.;])/g;
 export function claimFindings(t, changes, severities, isTest) {

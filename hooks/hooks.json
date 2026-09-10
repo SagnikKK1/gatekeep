@@ -6,6 +6,9 @@
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/gatekeep-hook.sh\" prompt", "timeout": 15 }] }
     ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/gatekeep-hook.sh\" tool-use", "timeout": 15 }] }
+    ],
     "Stop": [
       { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/gatekeep-hook.sh\" stop", "timeout": 600 }] }
     ]

@@ -364,11 +364,11 @@ check "installs into settings.local.json by default" '[ -f .claude/settings.loca
 n1=$(grep -c '"command": "' .claude/settings.local.json)
 node "$CLI" install >/dev/null 2>&1
 n2=$(grep -c '"command": "' .claude/settings.local.json)
-check "install is idempotent ($n1 -> $n2)" '[ "$n1" = "3" ] && [ "$n2" = "3" ]'
+check "install is idempotent ($n1 -> $n2)" '[ "$n1" = "4" ] && [ "$n2" = "4" ]'
 node "$CLI" status >/tmp/gk_out 2>&1
 check "status lists hooks, state dir and sessions" 'grep -q settings.local.json /tmp/gk_out && grep -q "Sessions: " /tmp/gk_out && grep -q "Last verdict: " /tmp/gk_out'
 node "$CLI" uninstall >/tmp/gk_out 2>&1
-check "uninstall removes the hooks" 'grep -q "Removed 3" /tmp/gk_out && ! grep -q gatekeep .claude/settings.local.json'
+check "uninstall removes the hooks" 'grep -q "Removed 4" /tmp/gk_out && ! grep -q gatekeep .claude/settings.local.json'
 mkdir -p .claude && echo '{"permissions": {"allow": ["Bash(ls:*)"]},' > .claude/settings.local.json
 node "$CLI" install >/tmp/gk_out 2>&1; code=$?
 check "malformed settings: refuses to overwrite" '[ $code -ne 0 ] && grep -q "not valid JSON" /tmp/gk_out && grep -q permissions .claude/settings.local.json'
@@ -380,6 +380,40 @@ NB="$E2E/nodebin"; mkdir -p "$NB"; ln -sf "$(command -v node)" "$NB/node"
 PATH="$NB:/usr/bin:/bin" node "$Q/dist/src/cli.js" install >/dev/null 2>&1
 check "hook command shell-quotes a path containing \$" "grep -q \"'\" .claude/settings.local.json && ! grep -q '\"node \\\\\"' .claude/settings.local.json"
 rm -rf .claude
+
+echo "== the tool-use recorder: claims work on a harness with no transcript"
+CR="$E2E/recorder"; mkdir -p "$CR/app"; cd "$CR"; git init -q -b main
+printf 'def add(a, b):\n    return 0\n' > app/calc.py
+git add -A && git commit -qm base
+hook session-start '{"session_id":"r1","cwd":"'"$CR"'","source":"startup"}' >/dev/null
+# a codex-shaped session: the shell tool takes an argv array, the edit tool calls the field "path", no transcript exists
+hook tool-use '{"session_id":"r1","cwd":"'"$CR"'","tool_name":"shell","tool_input":{"command":["python3","-m","pytest","-q"]}}' >/dev/null
+hook tool-use '{"session_id":"r1","cwd":"'"$CR"'","tool_name":"apply_patch","tool_input":{"path":"app/calc.py"}}' >/dev/null
+check "the recorder writes one signed line per tool call" '[ "$(grep -c sig "$GATEKEEP_HOME"/repos/*/sessions/r1.events.jsonl)" = "2" ]'
+printf 'def add(a, b):\n    return a + b\n' > app/calc.py
+out=$(hook stop '{"session_id":"r1","cwd":"'"$CR"'","last_message":"Done - all tests pass."}'); code=$?
+check "claims fire on a codex-shaped session, from the recorder alone" '[ $code -eq 0 ] && echo "$out" | grep -q "claim-tests-unverified" && echo "$out" | grep -q "before the last edit"'
+check "the recorder is not mistaken for a missing one" '! echo "$out" | grep -q "claims-not-recorded"'
+# a forged line cannot be signed, so it is dropped rather than counted as a test run
+python3 -c 'import json,sys;open(sys.argv[1],"a").write(json.dumps({"e":{"tool":"shell","command":"python3 -m pytest -q"},"sig":"f"*64})+"\n")' "$GATEKEEP_HOME"/repos/*/sessions/r1.events.jsonl
+out=$(hook stop '{"session_id":"r1","cwd":"'"$CR"'","last_message":"Done - all tests pass."}')
+check "a forged tool-call line does not launder a test run" 'echo "$out" | grep -q "claim-tests-unverified"'
+
+R2="$E2E/norecorder"; mkdir -p "$R2/app"; cd "$R2"; git init -q -b main
+printf 'x = 0\n' > app/a.py; git add -A && git commit -qm base
+hook session-start '{"session_id":"g1","cwd":"'"$R2"'","source":"startup"}' >/dev/null
+printf 'x = 1\n' > app/a.py
+out=$(hook stop '{"session_id":"g1","cwd":"'"$R2"'","last_message":"Fixed it, tests pass."}')
+check "a harness with no recorder says the claims rules did not run" 'echo "$out" | grep -q "claims-not-recorded" && echo "$out" | grep -q "hook tool-use"'
+out=$(hook stop '{"session_id":"g1","cwd":"'"$R2"'","last_message":"Fixed it, tests pass."}')
+check "and says it once, not on every stop" '! echo "$out" | grep -q "claims-not-recorded"'
+hook session-start '{"session_id":"g2","cwd":"'"$R2"'","source":"startup"}' >/dev/null
+printf 'x = 2\n' > app/a.py
+out=$(hook stop '{"session_id":"g2","cwd":"'"$R2"'"}')
+check "no final message means no claim, so nothing is reported" '! echo "$out" | grep -q "claims-not-recorded"'
+node "$CLI" status >/tmp/gk_out 2>&1
+check "status says whether the recorder is wired" 'grep -q "Claims recorder: not wired" /tmp/gk_out'
+cd "$R"
 
 echo "== protect-tests: the prevention lane"
 cd "$R"; rm -rf .claude

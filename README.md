@@ -17,7 +17,7 @@ gatekeep install                        # wires Claude Code hooks into .claude/s
 gatekeep status                         # confirms the hooks and shows the state directory
 ```
 
-As a Claude Code plugin instead, which wires the same three hooks for every project without touching any repository:
+As a Claude Code plugin instead, which wires the same four hooks for every project without touching any repository:
 
 ```bash
 claude plugin marketplace add SagnikKK1/gatekeep
@@ -69,6 +69,7 @@ Agents under pressure to get a green run delete tests, skip them, weaken `==` in
 
 - `SessionStart` snapshots the working tree as a git tree object and captures the gate's own config. Resuming, compacting, clearing or forking a session keeps the original snapshot, so work done before that point is still in the diff.
 - `UserPromptSubmit` records the first prompt as the task statement.
+- `PostToolUse` appends the tool call — the file it wrote, the command it ran — to a log signed with the session's key. This is what the claims rules read: parsing a harness's own transcript file only ever worked on Claude Code, and its format is nobody's stable interface.
 - `Stop` diffs the working tree against the snapshot, parses every changed test file with tree-sitter, runs every rule family over the diff, and exits 2 with the report when it finds blocking tampering. Claude Code feeds that report back to the agent as its next instruction. After `maxBlocks` blocks (default 3) it lets the agent finish and hands the findings to you instead.
 
 State lives in `~/.gatekeep/`, mirrored under the repository's own `.git/gatekeep/`, so the agent cannot edit its own block counter. The config is the copy captured at session start: editing `gatekeep.config.json` or the hook settings mid-session is itself a blocking finding.
@@ -79,7 +80,7 @@ The check that does not depend on recognising a tampering pattern comes first, a
 it can detect your test command: the tests as they stood at session start are restored and the suite is run against
 the final code.
 
-68 rules across five deterministic families then read the diff itself, and a model-backed review you turn on reads
+69 rules across five deterministic families then read the diff itself, and a model-backed review you turn on reads
 it once more with the task in hand.
 
 | Family | Blocks when |
@@ -87,7 +88,7 @@ it once more with the task in hand.
 | **Original tests against final code** (`testCommand`, filled in by `install` when it can detect one) | The tests the session started with, kept where the agent cannot touch them, fail on the final code while the agent's edited tests pass. This is the check that does not depend on recognising a tampering pattern: it re-runs the original oracle |
 | **Test integrity** | An existing test is deleted, skipped, focused, made vacuous, given an early exit, or its assertions are removed, weakened (`==` to truthiness, `raises(ValueError)` to `raises(Exception)`), made unreachable, swallowed in a `try`, shadowed, or mocked away on the module under test. Renames and moves are paired by body similarity first. Python, JS/TS, Go, Java, Rust, Ruby |
 | **Check integrity** | CI steps removed or `continue-on-error` added, linter or type-checker config loosened, pre-commit hooks removed, suppression directives added, errors swallowed or validation removed in source, `.gitignore` made to hide tests |
-| **Claims** | The final message says tests pass but none ran after the last edit; files it names did not change; git history was rewritten during the session |
+| **Claims** | The final message says tests pass but none ran after the last edit; files it names did not change; git history was rewritten during the session. Read from gatekeep's own record of the session's tool calls, so this works on any harness with a PostToolUse-shaped hook, not only Claude Code |
 | **Scope** | Protected paths edited (migrations, auth, payments, infra), new or loosened dependencies, registry changes, typosquats, secrets, a feature deleted together with its tests |
 | **Source fitted to the tests** | A new branch compares against a value only the tests used, its constants are those of one test case, a table is keyed by test values, or the implementation reads the test runner's own environment. This is the half of source-side cheating a diff can see |
 | **Model-backed review** (opt-in `judge`) | A model reads the diff with the task in hand: weakened-but-passing tests, special-cased inputs, task mismatch, text addressed to the reviewer. **Advisory** — it adds suggestions and annotates blocks, and never decides the verdict or lifts a block. Off unless you turn it on: it runs only when you set the API key it names, on your key, and never picks up an ambient login |

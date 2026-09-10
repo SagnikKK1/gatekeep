@@ -23,6 +23,8 @@ export interface SessionState {
   configText: string | null;
   /** sha1 of each protected file on disk at session start (covers gitignored files the snapshot cannot see). */
   protectedHashes?: Record<string, string | null>;
+  /** Set once `claims-not-recorded` has been reported. A gap in the gate's own coverage is worth saying once. */
+  claimsWarned?: boolean;
 }
 
 /** State lives outside the repository so the agent being gated cannot edit it. Override with GATEKEEP_HOME. */
@@ -170,6 +172,72 @@ export async function newSession(root: string, id: string, harness: string, base
   const s: SessionState = { id, harness, startedAt: new Date().toISOString(), baseTree, prompt: null, blocks: 0, lastVerdict: null, configText, protectedHashes };
   await saveSession(root, s, gitDir);
   return s;
+}
+
+/* --------------------------------------------------- the tool-use recorder (roadmap item 25)
+
+ * Parsing a harness's own transcript file is building on sand: the format is undocumented, it differs per harness,
+ * and OpenAI states outright that `transcript_path` "isn't a stable interface for hooks and may change over time".
+ * A PostToolUse hook writing our own log fixes that for every harness at once. Each line is signed with the same
+ * per-repository key as the session record, so an agent can truncate the log — which only ever loses findings — but
+ * cannot forge a test run it never made.
+ */
+
+/** One recorded tool call, normalised across harnesses. */
+export interface RecordedTool { tool: string; file?: string; command?: string }
+
+const MAX_EVENTS = 5000, MAX_COMMAND = 4000;
+
+function eventsHome(root: string, id: string): string { return path.join(sessionDir(root), `${safe(id)}.events.jsonl`); }
+function eventsMirror(gitDir: string | null, id: string): string | null {
+  return gitDir ? path.join(gitDir, 'gatekeep', 'sessions', `${safe(id)}.events.jsonl`) : null;
+}
+
+export async function appendToolEvent(root: string, id: string, ev: RecordedTool, gitDir: string | null = null): Promise<void> {
+  const rec: RecordedTool = {
+    tool: ev.tool.slice(0, 60),
+    ...(ev.file !== undefined ? { file: ev.file.slice(0, 1024) } : {}),
+    ...(ev.command !== undefined ? { command: ev.command.slice(0, MAX_COMMAND) } : {}),
+  };
+  const key = await hmacKey(root, true);
+  const line = JSON.stringify({ e: rec, ...(key ? { sig: createHmac('sha256', key).update(JSON.stringify(rec)).digest('hex') } : {}) }) + '\n';
+  // O_APPEND, and a line this short is written in one go, so concurrent tool calls do not need the session lock —
+  // which matters: PostToolUse fires on every call and must never be the reason an agent feels slow.
+  const p = eventsHome(root, id);
+  await fs.mkdir(path.dirname(p), { recursive: true, mode: 0o700 });
+  await fs.appendFile(p, line, { mode: 0o600 });
+  const mf = eventsMirror(gitDir, id);
+  if (mf) { try { await fs.mkdir(path.dirname(mf), { recursive: true }); await fs.appendFile(mf, line); } catch { /* read-only .git: the mirror is best effort */ } }
+}
+
+async function verifiedLines(file: string, key: Buffer | null): Promise<{ events: RecordedTool[]; dropped: number }> {
+  let text: string;
+  try { text = await fs.readFile(file, 'utf8'); } catch { return { events: [], dropped: 0 }; }
+  const events: RecordedTool[] = [];
+  let dropped = 0;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let o: { e?: RecordedTool; sig?: string };
+    try { o = JSON.parse(line) as { e?: RecordedTool; sig?: string }; } catch { dropped++; continue; }
+    if (!o.e || typeof o.e.tool !== 'string') { dropped++; continue; }
+    if (key) {
+      const want = createHmac('sha256', key).update(JSON.stringify(o.e)).digest('hex');
+      if (o.sig !== want) { dropped++; continue; }
+    }
+    events.push(o.e);
+    if (events.length >= MAX_EVENTS) break;
+  }
+  return { events, dropped };
+}
+
+/** The recorded tool calls for a session. The longer of the two copies wins: truncation is the only attack the log allows. */
+export async function readToolEvents(root: string, id: string, gitDir: string | null = null): Promise<{ events: RecordedTool[]; dropped: number }> {
+  const key = await hmacKey(root, false);
+  const home = await verifiedLines(eventsHome(root, id), key);
+  const mf = eventsMirror(gitDir, id);
+  const mirror = mf ? await verifiedLines(mf, key) : { events: [], dropped: 0 };
+  const best = mirror.events.length > home.events.length ? mirror : home;
+  return { events: best.events, dropped: home.dropped + mirror.dropped };
 }
 
 export async function listSessions(root: string): Promise<SessionState[]> {

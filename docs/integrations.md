@@ -4,8 +4,8 @@ Part of [gatekeep](../README.md): adapters, the generic protocol, overrides, the
 
 | Harness | Status | How |
 |---|---|---|
-| Claude Code | supported | `gatekeep install` wires SessionStart, UserPromptSubmit and Stop hooks. Both the older and newer field spellings are read (`source`/`how`, `prompt`/`prompt_text`), and the Stop payload's `last_assistant_message` is preferred over the transcript file, which is written asynchronously and can lag the turn that triggered the hook |
-| Codex CLI | wired, untested | `gatekeep install --codex` writes the same three hooks to `~/.codex/hooks.json` |
+| Claude Code | supported | `gatekeep install` wires SessionStart, UserPromptSubmit, PostToolUse and Stop hooks. Both the older and newer field spellings are read (`source`/`how`, `prompt`/`prompt_text`), and the Stop payload's `last_assistant_message` is preferred over the transcript file, which is written asynchronously and can lag the turn that triggered the hook |
+| Codex CLI | wired, untested | `gatekeep install --codex` writes the same four hooks to `<repo>/.codex/hooks.json` (`--global` for `~/.codex/`) |
 | Claude Agent SDK | works unmodified | `query()` runs the hooks already in `.claude/settings.json`; see below |
 | Devin CLI | works unmodified, untested | it reads Claude Code's settings files and has the same Stop contract; see below |
 | Anything else | supported via the generic protocol | two commands, below |
@@ -37,9 +37,10 @@ give as enabled by default. It has `SessionStart`, `UserPromptSubmit` and `Stop`
 `{"decision": "block", "reason": ...}` command-hook contract. `gatekeep install` should therefore be the entire
 setup, with no gatekeep code involved.
 
-Untested against a live Devin install, and one part is expected not to work: the claims family needs a transcript,
-which Devin's documented Stop payload does not carry, so those four rules will no-op there until the recorder
-replaces transcript parsing.
+Untested against a live Devin install. The claims family works there because it reads gatekeep's own `PostToolUse`
+record rather than a transcript, and Devin has that event; what it still needs is the agent's final message, which
+its documented Stop payload does not list. Without one the four claims rules have no text to check and the report
+says so once per session.
 
 Any framework, script or CI job can use the generic protocol with no hook system:
 
@@ -48,6 +49,16 @@ sid=$(gatekeep session start --task "Fix the rounding bug in app/calc.py")   # s
 # ... the agent works ...
 gatekeep verify --session "$sid" --json     # exit 0 pass, 1 block; verdict on stdout
 ```
+
+A framework with its own tool loop can also feed the recorder, which is what the claims rules read:
+
+```bash
+echo '{"session_id":"'"$sid"'","tool_name":"shell","tool_input":{"command":"pytest -q"}}' | gatekeep hook tool-use
+```
+
+Anything with a `command` string (or argv array) is recorded as a shell call; anything with a `file_path`, `path`,
+`notebook_path` or `filename` is recorded as a file access, and the tool's name decides whether that is a read or a
+write. Each line is signed with the session's key, so the log can be truncated but not forged.
 
 `verify` applies every rule in session mode: the config is the copy captured at `session start`, protected files are hashed from disk, the task statement drives the scope check, and `--transcript <path>` adds claim verification when the framework can hand over a Claude Code style transcript. `--allow <rule>` on `verify` is treated as a human override and recorded. The state layout and `.git` mirror are the same as for the hooks, so `gatekeep status` shows these sessions too.
 

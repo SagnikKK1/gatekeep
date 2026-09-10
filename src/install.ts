@@ -23,7 +23,9 @@ type HookCmd = { type: 'command'; command: string; timeout?: number };
 type HookEntry = { matcher?: string; hooks: HookCmd[] };
 type Settings = { hooks?: Record<string, HookEntry[]> } & Record<string, unknown>;
 
-export const GATEKEEP_HOOK_RE = /(gatekeep|cli\.js)['"]?\s+hook\s+(session-start|prompt|stop)\b/;
+// `pre-tool-use` is deliberately absent: the prevention lane is opt-in and managed by `protect-tests`, not by
+// `install`/`uninstall`. `\s+` before the alternation is what keeps `pre-tool-use` from matching `tool-use`.
+export const GATEKEEP_HOOK_RE = /(gatekeep|cli\.js)['"]?\s+hook\s+(session-start|prompt|tool-use|stop)\b/;
 
 export interface InstallTarget { kind: 'project-local' | 'project-shared' | 'global'; file: string }
 
@@ -47,6 +49,7 @@ export async function installClaudeCode(target: InstallTarget['kind'], cwd: stri
   const wanted: Record<string, { command: string; timeout: number }> = {
     SessionStart: { command: `${prefix} hook session-start --harness claude-code`, timeout: 120 },
     UserPromptSubmit: { command: `${prefix} hook prompt --harness claude-code`, timeout: 10 },
+    PostToolUse: { command: `${prefix} hook tool-use --harness claude-code`, timeout: 10 },
     Stop: { command: `${prefix} hook stop --harness claude-code`, timeout: 600 },
   };
   const added: string[] = [], updated: string[] = [];
@@ -116,6 +119,7 @@ export async function installCodex(cwd: string, target: InstallTarget['kind'] = 
   const wanted: Record<string, string> = {
     SessionStart: `${prefix} hook session-start --harness codex`,
     UserPromptSubmit: `${prefix} hook prompt --harness codex`,
+    PostToolUse: `${prefix} hook tool-use --harness codex`,
     Stop: `${prefix} hook stop --harness codex`,
   };
   for (const [event, command] of Object.entries(wanted)) {

@@ -174,6 +174,80 @@ export async function newSession(root, id, harness, baseTree, configText, gitDir
     await saveSession(root, s, gitDir);
     return s;
 }
+const MAX_EVENTS = 5000, MAX_COMMAND = 4000;
+function eventsHome(root, id) { return path.join(sessionDir(root), `${safe(id)}.events.jsonl`); }
+function eventsMirror(gitDir, id) {
+    return gitDir ? path.join(gitDir, 'gatekeep', 'sessions', `${safe(id)}.events.jsonl`) : null;
+}
+export async function appendToolEvent(root, id, ev, gitDir = null) {
+    const rec = {
+        tool: ev.tool.slice(0, 60),
+        ...(ev.file !== undefined ? { file: ev.file.slice(0, 1024) } : {}),
+        ...(ev.command !== undefined ? { command: ev.command.slice(0, MAX_COMMAND) } : {}),
+    };
+    const key = await hmacKey(root, true);
+    const line = JSON.stringify({ e: rec, ...(key ? { sig: createHmac('sha256', key).update(JSON.stringify(rec)).digest('hex') } : {}) }) + '\n';
+    // O_APPEND, and a line this short is written in one go, so concurrent tool calls do not need the session lock —
+    // which matters: PostToolUse fires on every call and must never be the reason an agent feels slow.
+    const p = eventsHome(root, id);
+    await fs.mkdir(path.dirname(p), { recursive: true, mode: 0o700 });
+    await fs.appendFile(p, line, { mode: 0o600 });
+    const mf = eventsMirror(gitDir, id);
+    if (mf) {
+        try {
+            await fs.mkdir(path.dirname(mf), { recursive: true });
+            await fs.appendFile(mf, line);
+        }
+        catch { /* read-only .git: the mirror is best effort */ }
+    }
+}
+async function verifiedLines(file, key) {
+    let text;
+    try {
+        text = await fs.readFile(file, 'utf8');
+    }
+    catch {
+        return { events: [], dropped: 0 };
+    }
+    const events = [];
+    let dropped = 0;
+    for (const line of text.split('\n')) {
+        if (!line.trim())
+            continue;
+        let o;
+        try {
+            o = JSON.parse(line);
+        }
+        catch {
+            dropped++;
+            continue;
+        }
+        if (!o.e || typeof o.e.tool !== 'string') {
+            dropped++;
+            continue;
+        }
+        if (key) {
+            const want = createHmac('sha256', key).update(JSON.stringify(o.e)).digest('hex');
+            if (o.sig !== want) {
+                dropped++;
+                continue;
+            }
+        }
+        events.push(o.e);
+        if (events.length >= MAX_EVENTS)
+            break;
+    }
+    return { events, dropped };
+}
+/** The recorded tool calls for a session. The longer of the two copies wins: truncation is the only attack the log allows. */
+export async function readToolEvents(root, id, gitDir = null) {
+    const key = await hmacKey(root, false);
+    const home = await verifiedLines(eventsHome(root, id), key);
+    const mf = eventsMirror(gitDir, id);
+    const mirror = mf ? await verifiedLines(mf, key) : { events: [], dropped: 0 };
+    const best = mirror.events.length > home.events.length ? mirror : home;
+    return { events: best.events, dropped: home.dropped + mirror.dropped };
+}
 export async function listSessions(root) {
     try {
         const names = await fs.readdir(sessionDir(root));

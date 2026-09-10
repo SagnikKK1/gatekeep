@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import type { FileChange, Finding, Severity } from './model.js';
+import type { RecordedTool } from './session.js';
 import { langFor } from './lang.js';
 
 /**
@@ -12,6 +13,7 @@ export const CLAIM_SEVERITIES: Record<string, Severity> = {
   'claim-checks-unverified': 'warn',
   'summary-files-mismatch': 'warn',
   'history-rewritten': 'block',
+  'claims-not-recorded': 'warn',
 };
 
 export interface TranscriptEvent {
@@ -134,6 +136,39 @@ export async function readTranscript(p: string | undefined): Promise<Transcript 
     if (st.size > 200 * 1024 * 1024) return null;
     return parseTranscript(await fs.readFile(p, 'utf8'));
   } catch { return null; }
+}
+
+/**
+ * Tool names, across harnesses. The recorder normalises what it can — a `command` makes an event a shell call
+ * whatever the tool is called — but the edit/read split has to come from the name, and every harness spells it
+ * differently. Unknown names are treated as reads: crediting an unknown tool with an edit would make every test
+ * run look stale.
+ */
+export function classifyTool(name: string): 'edit' | 'read' {
+  if (EDIT_TOOLS.has(name) || READ_TOOLS.has(name)) return EDIT_TOOLS.has(name) ? 'edit' : 'read';
+  return /(edit|write|patch|create|update|replace|insert|append|delete|remove|move|rename)/i.test(name) ? 'edit' : 'read';
+}
+
+/**
+ * The same `Transcript` shape, built from our own recorder rather than a harness's transcript file. The bash-write
+ * derivation below is deliberately identical to the transcript parser's: if the two disagreed about when an edit
+ * happened, the same session would get different findings depending on which source was available.
+ */
+export function transcriptFromTools(tools: RecordedTool[], finalText: string): Transcript {
+  const events: TranscriptEvent[] = [];
+  let i = 0;
+  for (const t of tools) {
+    if (typeof t.command === 'string' && t.command !== '') {
+      events.push({ i: i++, kind: 'bash', command: t.command });
+      const shell = shellOnly(t.command);
+      const inlinePyWrites = INLINE_PY.test(shell) && INLINE_PY_WRITES.test(t.command);
+      if (BASH_WRITES.test(shell) || inlinePyWrites) events.push({ i: i++, kind: 'edit', command: t.command, file: redirectTarget(t.command) });
+      continue;
+    }
+    if (t.file === undefined) continue;
+    events.push({ i: i++, kind: classifyTool(t.tool), file: t.file });
+  }
+  return { events, finalText, recognized: true };
 }
 
 const PATH_RE = /(?:^|[\s`'"(\[])((?:[\w.@-]+\/)+[\w.@-]+\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|mts|cts|go|rs|java|kt|rb|php|cs|swift|scala|json|ya?ml|toml|cfg|ini|sh|md|sql|html|css|scss|vue|svelte)|[\w.@-]+\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|mts|cts|go|rs|java|kt|rb|php|cs|swift|scala))(?=$|[\s`'"):\],.;])/g;

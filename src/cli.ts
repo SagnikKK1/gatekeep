@@ -8,12 +8,12 @@ import { analyze, needsContent, PROTECTED_FILES, type AnalysisResult } from './r
 import { parseConfig, readConfigText, defaultConfigText, CONFIG_FILENAME, type GatekeepConfig } from './config.js';
 import { repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees, catFile, lsTree, isShallow, BlobBatch, GitError, type SnapshotProblems } from './git.js';
 import { langFor } from './lang.js';
-import { loadSession, loadSessionChecked, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, type SessionState } from './session.js';
+import { loadSession, loadSessionChecked, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, appendToolEvent, readToolEvents, type SessionState, type RecordedTool } from './session.js';
 import { decide, writeVerdict, formatReport, type Verdict } from './verdict.js';
 import { installClaudeCode, uninstallClaudeCode, installCodex, installedHooks, detectTestCommand, claudeSettingsFile, hookCommandPrefix } from './install.js';
 import { discoverTestTree, applyProtect, removeProtect, readProtectRecord, decideProtect, protectedIn } from './protect.js';
 import { runOriginalTests, testRunFindings, type TestRunResult } from './testrun.js';
-import { readTranscript, claimFindings } from './claims.js';
+import { readTranscript, claimFindings, transcriptFromTools, type Transcript } from './claims.js';
 import { applyOverrides, overridesFromPrompts, overridesFromCli, overridesFromCommits, type Override } from './override.js';
 import { isTestFile } from './rules.js';
 import { runJudge, type JudgeResult } from './judge.js';
@@ -59,7 +59,7 @@ Usage:
       Exit 0 = pass, 1 = blocked, 3 = error. --allow lifts rules for this run (recorded in the verdict);
       commit trailers "gatekeep: allow <rule> -- reason" between --base and HEAD do the same.
       --judge <model> runs the model-backed review for this run; --no-judge skips the configured one.
-  gatekeep hook session-start|prompt|stop [--harness claude-code|codex]
+  gatekeep hook session-start|prompt|tool-use|stop [--harness claude-code|codex]
       Entry points wired into the agent's hooks. Reads the hook JSON on stdin.
   gatekeep install [--shared | --global] [--codex]
       Wire the hooks. Default: .claude/settings.local.json (machine-local, not committed).
@@ -104,7 +104,11 @@ async function configFor(root: string, baseTree: string | null, session: Session
   return { cfg, findings };
 }
 
-interface Analysis { cur: string; changes: FileChange[]; result: AnalysisResult; originalTests: TestRunResult | null; claim: string | null }
+interface Analysis {
+  cur: string; changes: FileChange[]; result: AnalysisResult; originalTests: TestRunResult | null; claim: string | null;
+  /** Set when the agent made a claim the gate had no recorded tool calls or transcript to check it against. */
+  claimsGap: 'none' | null;
+}
 
 /**
  * Test files as they stood at session start. The oracle rule compares new source against what the tests know, and
@@ -134,7 +138,20 @@ async function baseTestFiles(root: string, base: string, cfg: GatekeepConfig, ch
   return out;
 }
 
-async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sessionMode: boolean, transcriptPath?: string, task?: string | null, finalText?: string, noBaseline?: boolean): Promise<Analysis> {
+interface AnalysisOpts {
+  transcriptPath?: string;
+  task?: string | null;
+  finalText?: string;
+  noBaseline?: boolean;
+  /** Tool calls recorded by our own PostToolUse hook. Preferred over any transcript: see src/session.ts. */
+  tools?: RecordedTool[];
+  harness?: string;
+  /** False once this session has already been told the claims family is not running. */
+  warnClaims?: boolean;
+}
+
+async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sessionMode: boolean, opts: AnalysisOpts = {}): Promise<Analysis> {
+  const { transcriptPath, task, finalText, noBaseline } = opts;
   const snapshot: SnapshotProblems = { indexFlags: [], hidden: [] };
   const cur = await snapshotWorkingTree(root, snapshot);
   const changes = await diffTrees(root, base, cur, { shouldLoad: (p) => needsContent(p, cfg.rules), maxBytes: 2 * 1024 * 1024 });
@@ -149,12 +166,32 @@ async function runAnalysis(root: string, base: string, cfg: GatekeepConfig, sess
   if (snapshot.hidden.length && snapSev('paths-hidden-from-snapshot') !== 'off') {
     result.findings.push({ rule: 'paths-hidden-from-snapshot', severity: snapSev('paths-hidden-from-snapshot'), file: snapshot.hidden[0]!, message: `${snapshot.hidden.length} untracked path(s) are hidden by .git/info/exclude or core.excludesFile rather than by a committed .gitignore: ${snapshot.hidden.slice(0, 5).join(', ')}` });
   }
-  // The transcript file is written asynchronously and can be missing the turn that triggered this hook, so when the
-  // harness hands us the final message directly, that is the authoritative text for the claim rules.
+  // Two possible sources for the claim rules, in order of preference. Our own recorder works on every harness and
+  // its format is ours; the transcript is a Claude Code specific fallback for sessions started before the recorder
+  // was wired. The transcript file is also written asynchronously and can be missing the turn that triggered this
+  // hook, so when the harness hands us the final message directly, that is the authoritative text either way.
   const read = transcriptPath ? await readTranscript(transcriptPath) : null;
-  const transcript = read && finalText !== undefined ? { ...read, finalText } : read;
+  const recorded = opts.tools ?? [];
+  let transcript: Transcript | null = null;
+  if (recorded.length > 0) transcript = transcriptFromTools(recorded, finalText ?? read?.finalText ?? '');
+  else if (read?.recognized) transcript = finalText !== undefined ? { ...read, finalText } : read;
   if (transcript) result.findings.push(...claimFindings(transcript, changes, cfg.rules.severities, (p) => isTestFile(p, cfg.rules)));
-  return { cur, changes, result, originalTests, claim: transcript?.finalText ?? null };
+  // Silence here used to be indistinguishable from "nothing to report": on every harness but Claude Code the claims
+  // family had no input at all and returned [], and nobody could tell that from a pass.
+  //
+  // It says so only when the agent actually made a claim there was no way to check — a final message, against a
+  // session that changed something, with no recorded tool calls and no readable transcript. No final message means
+  // no claim, and silence there is the right answer rather than a hidden gap. Reported once per session: this is a
+  // gap in the gate's own wiring, not a finding about the work, and repeating it every stop is how warnings get
+  // ignored. `gatekeep status` says whether the recorder is wired at all.
+  const words = (finalText ?? read?.finalText ?? '').trim();
+  const claimsGap: 'none' | null = transcript === null && words !== '' && changes.length > 0 ? 'none' : null;
+  const claimSev = cfg.rules.severities['claims-not-recorded'] ?? 'warn';
+  if (sessionMode && claimSev !== 'off' && claimsGap !== null && opts.warnClaims !== false) {
+    const h = opts.harness ? ` on ${opts.harness}` : '';
+    result.findings.push({ rule: 'claims-not-recorded', severity: claimSev, file: '.', message: `The agent's final message was not checked against what it actually did${h}: no tool calls were recorded for this session and no readable transcript was given, so the four claims rules did not run. Wire the recorder with \`gatekeep install\` (a PostToolUse hook), or call \`gatekeep hook tool-use\` with the tool call on stdin from your own framework.` });
+  }
+  return { cur, changes, result, originalTests, claim: transcript?.finalText ?? null, claimsGap };
 }
 
 /**
@@ -210,7 +247,9 @@ async function cmdRun(args: Args, cwd: string): Promise<number> {
   } else base = session?.baseTree ?? await headTree(root);
   const t0 = Date.now();
   const { cfg, findings: cfgFindings } = await configFor(root, baseForConfig, session);
-  const a = await runAnalysis(root, base, cfg, session !== null, undefined, session?.prompt ?? null);
+  const tools = sessionId ? (await readToolEvents(root, sessionId, gd)).events : [];
+  const a = await runAnalysis(root, base, cfg, session !== null, { task: session?.prompt ?? null, tools, harness: session?.harness, warnClaims: !session?.claimsWarned });
+  if (session && a.claimsGap !== null && !session.claimsWarned) { session.claimsWarned = true; await saveSession(root, session, gd); }
   const { cur, result, originalTests } = a;
   const findings = [...cfgFindings, ...result.findings];
   const judge = await judgeStep(root, base, a, cfg, session?.prompt ?? null, findings, args.flags);
@@ -253,7 +292,14 @@ async function cmdVerify(args: Args, cwd: string): Promise<number> {
   if (!s) throw new UserError(`no session "${args.flags.session}" recorded for this repository`);
   const t0 = Date.now();
   const { cfg, findings: cfgFindings } = await configFor(root, null, s);
-  const a = await runAnalysis(root, s.baseTree, cfg, true, typeof args.flags.transcript === 'string' ? args.flags.transcript : undefined, s.prompt);
+  const a = await runAnalysis(root, s.baseTree, cfg, true, {
+    transcriptPath: typeof args.flags.transcript === 'string' ? args.flags.transcript : undefined,
+    task: s.prompt,
+    tools: (await readToolEvents(root, s.id, gd)).events,
+    harness: s.harness,
+    warnClaims: !s.claimsWarned,
+  });
+  if (a.claimsGap !== null && !s.claimsWarned) { s.claimsWarned = true; await saveSession(root, s, gd); }
   const { cur, result, originalTests } = a;
   const findings = [...cfgFindings, ...result.findings];
   const judge = await judgeStep(root, s.baseTree, a, cfg, s.prompt, findings, args.flags);
@@ -310,6 +356,18 @@ async function cmdHook(args: Args, cwd: string): Promise<number> {
     });
     return 0;
   }
+  if (event === 'tool-use') {
+    // PostToolUse. Fires on every call, so it does the least possible: normalise, append, exit. No lock, no diff.
+    const toolName = typeof input.tool_name === 'string' ? input.tool_name : typeof input.tool === 'string' ? input.tool : '';
+    if (!toolName) return 0;
+    const ti = input.tool_input && typeof input.tool_input === 'object' && !Array.isArray(input.tool_input) ? input.tool_input as Record<string, unknown> : {};
+    // A `command` is a shell call whatever the harness calls the tool; Codex passes it as an argv array.
+    const cmd = typeof ti.command === 'string' ? ti.command : Array.isArray(ti.command) ? (ti.command as unknown[]).filter((x) => typeof x === 'string').join(' ') : undefined;
+    const file = ['file_path', 'notebook_path', 'path', 'filename'].map((k) => ti[k]).find((v) => typeof v === 'string') as string | undefined;
+    if (cmd === undefined && file === undefined) return 0; // nothing the claim rules can use
+    await appendToolEvent(root, sessionId, { tool: toolName, ...(file !== undefined ? { file } : {}), ...(cmd !== undefined ? { command: cmd } : {}) }, gd);
+    return 0;
+  }
   if (event === 'pre-tool-use') {
     // The prevention lane. Fails open in every unclear case: a permission hook that misfires is worse than one that misses.
     const toolName = typeof input.tool_name === 'string' ? input.tool_name : '';
@@ -351,7 +409,19 @@ async function stopHook(root: string, sessionId: string, harness: string, input:
     }
     const t0 = Date.now();
     const { cfg, findings: cfgFindings } = await configFor(root, null, s);
-    const a = await runAnalysis(root, s.baseTree, cfg, true, typeof input.transcript_path === 'string' ? input.transcript_path : undefined, s.prompt, typeof input.last_assistant_message === 'string' ? input.last_assistant_message : undefined, noBaseline);
+    // `last_assistant_message` is Claude Code's spelling; the other two are what harnesses that carry the final
+    // message at all tend to call it. Without one of them the claim rules have no text to check.
+    const finalText = ['last_assistant_message', 'last_message', 'final_message'].map((k) => input[k]).find((v) => typeof v === 'string') as string | undefined;
+    const a = await runAnalysis(root, s.baseTree, cfg, true, {
+      transcriptPath: typeof input.transcript_path === 'string' ? input.transcript_path : undefined,
+      task: s.prompt,
+      finalText,
+      noBaseline,
+      tools: (await readToolEvents(root, sessionId, gd)).events,
+      harness,
+      warnClaims: !s.claimsWarned,
+    });
+    if (a.claimsGap !== null) s.claimsWarned = true; // saved with the rest of the session state below
     const { cur, result, originalTests } = a;
     // Protected files compared from disk: catches gitignored hook settings the tree diff cannot see.
     if (s.protectedHashes) {
@@ -530,6 +600,8 @@ async function cmdStatus(cwd: string): Promise<number> {
   if (!root) { console.log('Repository: not inside a git repository'); return 0; }
   console.log(`Repository: ${root}`);
   console.log(`Config: ${existsSync(path.join(root, CONFIG_FILENAME)) ? CONFIG_FILENAME : 'none (defaults)'}`);
+  const recorder = hooks.some((h) => h.events.includes('PostToolUse'));
+  console.log(recorder ? 'Claims recorder: wired (PostToolUse)' : 'Claims recorder: not wired — the four claims rules cannot run. `gatekeep install` adds it.');
   const prot = await protectedIn(root, settingsFiles(root));
   console.log(prot.length ? `protect-tests: on — ${prot.map((p) => `${p.file} (${p.deny} deny entries)`).join(', ')}` : 'protect-tests: off (run `gatekeep protect-tests` to make the test tree read-only)');
   const { problems } = parseConfig(await readConfigText(root));

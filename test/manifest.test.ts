@@ -23,8 +23,8 @@ test('plugin manifest matches the package it installs', () => {
 
 test('every hook the installer wires is also wired by the plugin, through the resolver', () => {
   const hooks = read('hooks/hooks.json').hooks as Record<string, { hooks: { command: string; timeout?: number }[] }[]>;
-  assert.deepEqual(Object.keys(hooks).sort(), ['SessionStart', 'Stop', 'UserPromptSubmit']);
-  const events: Record<string, string> = { SessionStart: 'session-start', UserPromptSubmit: 'prompt', Stop: 'stop' };
+  assert.deepEqual(Object.keys(hooks).sort(), ['PostToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit']);
+  const events: Record<string, string> = { SessionStart: 'session-start', UserPromptSubmit: 'prompt', PostToolUse: 'tool-use', Stop: 'stop' };
   for (const [event, arg] of Object.entries(events)) {
     const cmd = hooks[event]![0]!.hooks[0]!.command;
     assert.match(cmd, /\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/gatekeep-hook\.sh/, event);

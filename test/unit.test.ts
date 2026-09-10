@@ -9,6 +9,8 @@ import { parseConfig, defaultConfigText } from '../src/config.js';
 import { analyze } from '../src/rules.js';
 import { installClaudeCode, uninstallClaudeCode, detectTestCommand, GATEKEEP_HOOK_RE } from '../src/install.js';
 import { patternFor, bashWriteTargets, decideProtect, denyEntries, writeTargets } from '../src/protect.js';
+import { transcriptFromTools, classifyTool, claimFindings, CLAIM_SEVERITIES } from '../src/claims.js';
+import { appendToolEvent, readToolEvents } from '../src/session.js';
 import { DEFAULT_RULE_CONFIG } from '../src/rules.js';
 import { jsTargetHits, jsSpecifierStem, pythonTargetHits } from '../src/lang.js';
 import { formatReport, decide, type Verdict } from '../src/verdict.js';
@@ -69,7 +71,7 @@ test('installer is idempotent, repairs duplicates, refuses malformed settings, a
   ] } }));
   const r1 = await installClaudeCode('project-local', dir);
   const s1 = JSON.parse(await fs.readFile(file, 'utf8')) as { permissions: unknown; hooks: Record<string, { hooks: { command: string }[] }[]> };
-  assert.deepEqual(r1.added.sort(), ['SessionStart', 'UserPromptSubmit']);
+  assert.deepEqual(r1.added.sort(), ['PostToolUse', 'SessionStart', 'UserPromptSubmit']);
   assert.deepEqual(r1.updated, ['Stop']);
   assert.ok(s1.permissions, 'unrelated settings preserved');
   const stopCmds = s1.hooks.Stop!.flatMap((e) => e.hooks.map((h) => h.command));
@@ -78,7 +80,7 @@ test('installer is idempotent, repairs duplicates, refuses malformed settings, a
   const r2 = await installClaudeCode('project-local', dir);
   assert.deepEqual([r2.added, r2.updated], [[], []]);
   const u = await uninstallClaudeCode('project-local', dir);
-  assert.equal(u.removed, 3);
+  assert.equal(u.removed, 4);
   const s2 = JSON.parse(await fs.readFile(file, 'utf8')) as { hooks: Record<string, unknown[]> };
   assert.equal(s2.hooks.Stop!.length, 1);
   await fs.writeFile(file, '{"oops": ,}');
@@ -188,6 +190,61 @@ test('the shell scan spots writes to a test path and leaves reads alone', () => 
   assert.ok(!has('python -m pytest tests/test_a.py -q', 'tests/test_a.py'));
   assert.ok(!has('grep -r assert tests/test_a.py', 'tests/test_a.py'));
   assert.deepEqual(bashWriteTargets(''), []);
+});
+
+test('the recorder drives the claim rules the same way a transcript does', () => {
+  assert.equal(classifyTool('Edit'), 'edit');
+  assert.equal(classifyTool('Read'), 'read');
+  assert.equal(classifyTool('apply_patch'), 'edit');
+  assert.equal(classifyTool('write_file'), 'edit');
+  assert.equal(classifyTool('view_file'), 'read');
+  assert.equal(classifyTool('some_unknown_tool'), 'read', 'an unknown tool must not be credited with an edit');
+
+  const changes = [{ path: 'app/calc.py', status: 'M' as const }];
+  const isTest = () => false;
+  // A test run, then an edit, then "tests pass": the run is stale whichever source recorded it.
+  const stale = transcriptFromTools(
+    [{ tool: 'shell', command: 'python -m pytest -q' }, { tool: 'apply_patch', file: 'app/calc.py' }],
+    'Done, all tests pass.',
+  );
+  const f = claimFindings(stale, changes, CLAIM_SEVERITIES, isTest);
+  assert.ok(f.some((x) => x.rule === 'claim-tests-unverified' && /before the last edit/.test(x.message)));
+  // The other order is honest and says nothing.
+  const fresh = transcriptFromTools(
+    [{ tool: 'apply_patch', file: 'app/calc.py' }, { tool: 'shell', command: 'python -m pytest -q' }],
+    'Done, all tests pass.',
+  );
+  assert.ok(!claimFindings(fresh, changes, CLAIM_SEVERITIES, isTest).some((x) => x.rule === 'claim-tests-unverified'));
+  // A shell redirect is an edit here exactly as it is in the transcript parser.
+  const redirected = transcriptFromTools(
+    [{ tool: 'shell', command: 'python -m pytest -q' }, { tool: 'shell', command: 'echo x > app/calc.py' }],
+    'Done, all tests pass.',
+  );
+  assert.ok(redirected.events.some((e) => e.kind === 'edit'));
+  // A blocking rule that needs no final message at all still fires from recorded shell calls.
+  const rewritten = transcriptFromTools([{ tool: 'shell', command: 'git reset --hard HEAD~1' }], '');
+  assert.ok(claimFindings(rewritten, changes, CLAIM_SEVERITIES, isTest).some((x) => x.rule === 'history-rewritten' && x.severity === 'block'));
+});
+
+test('recorded tool calls are signed, so a forged line is dropped', async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gk-home-'));
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'gk-repo-'));
+  const prev = process.env.GATEKEEP_HOME;
+  process.env.GATEKEEP_HOME = home;
+  try {
+    await appendToolEvent(repo, 's1', { tool: 'Bash', command: 'pytest -q' });
+    await appendToolEvent(repo, 's1', { tool: 'Edit', file: 'app/calc.py' });
+    const ok = await readToolEvents(repo, 's1');
+    assert.deepEqual(ok.events.map((e) => e.tool), ['Bash', 'Edit']);
+    assert.equal(ok.dropped, 0);
+    // An agent appending a test run it never made cannot sign it.
+    const { repoStateDir } = await import('../src/session.js');
+    const log = path.join(repoStateDir(repo), 'sessions', 's1.events.jsonl');
+    await fs.appendFile(log, JSON.stringify({ e: { tool: 'Bash', command: 'pytest -q' }, sig: 'f'.repeat(64) }) + '\n');
+    const after = await readToolEvents(repo, 's1');
+    assert.equal(after.events.length, 2, 'the forged line is not counted');
+    assert.equal(after.dropped, 1);
+  } finally { if (prev === undefined) delete process.env.GATEKEEP_HOME; else process.env.GATEKEEP_HOME = prev; }
 });
 
 test('report caps the listing and counts by decision', () => {

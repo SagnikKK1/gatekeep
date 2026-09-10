@@ -20,7 +20,9 @@ export async function hookCommandPrefix(shared) {
     const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'cli.js');
     return `node ${shellQuote(cli)}`;
 }
-export const GATEKEEP_HOOK_RE = /(gatekeep|cli\.js)['"]?\s+hook\s+(session-start|prompt|stop)\b/;
+// `pre-tool-use` is deliberately absent: the prevention lane is opt-in and managed by `protect-tests`, not by
+// `install`/`uninstall`. `\s+` before the alternation is what keeps `pre-tool-use` from matching `tool-use`.
+export const GATEKEEP_HOOK_RE = /(gatekeep|cli\.js)['"]?\s+hook\s+(session-start|prompt|tool-use|stop)\b/;
 export function claudeSettingsFile(target, cwd) {
     if (target === 'global')
         return path.join(process.env.HOME ?? process.env.USERPROFILE ?? '~', '.claude', 'settings.json');
@@ -49,6 +51,7 @@ export async function installClaudeCode(target, cwd) {
     const wanted = {
         SessionStart: { command: `${prefix} hook session-start --harness claude-code`, timeout: 120 },
         UserPromptSubmit: { command: `${prefix} hook prompt --harness claude-code`, timeout: 10 },
+        PostToolUse: { command: `${prefix} hook tool-use --harness claude-code`, timeout: 10 },
         Stop: { command: `${prefix} hook stop --harness claude-code`, timeout: 600 },
     };
     const added = [], updated = [];
@@ -135,6 +138,7 @@ export async function installCodex(cwd, target = 'project-local') {
     const wanted = {
         SessionStart: `${prefix} hook session-start --harness codex`,
         UserPromptSubmit: `${prefix} hook prompt --harness codex`,
+        PostToolUse: `${prefix} hook tool-use --harness codex`,
         Stop: `${prefix} hook stop --harness codex`,
     };
     for (const [event, command] of Object.entries(wanted)) {
