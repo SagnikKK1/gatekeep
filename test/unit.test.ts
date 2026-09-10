@@ -374,15 +374,16 @@ test('a new test file that does not parse warns; only breaking an existing one b
   // Regression for 0.2.0: `before?.parseErrors ?? 0` read as 0 for a file that never existed, so every new test
   // file counted as having its syntax broken during the session. Our grammar build also rejects valid TypeScript
   // import types, so writing one correct new test file was enough to be blocked.
-  const importType = "import { test } from 'node:test';\nlet x: import('node:fs').Dirent[] = [];\ntest('t', () => { if (x.length !== 0) throw new Error('x'); });\n";
+  // Genuinely broken syntax. The import type that originally triggered this now parses (see core.test.ts).
+  const broken = "import { test } from 'node:test';\ntest('t', ( => { throw new Error('x'); });\n";
   const clean = "import { test } from 'node:test';\ntest('t', () => { if (1 !== 1) throw new Error('x'); });\n";
 
-  const added = await analyze([{ path: 'test/new.test.ts', status: 'A', after: importType }], undefined, {});
+  const added = await analyze([{ path: 'test/new.test.ts', status: 'A', after: broken }], undefined, {});
   const addedSev = added.findings.find((f) => f.rule === 'test-file-unparseable')?.severity;
   assert.equal(addedSev, 'warn', 'a brand-new file has no earlier tests to protect');
 
-  const broken = await analyze([{ path: 'test/a.test.ts', status: 'M', before: clean, after: importType }], undefined, {});
-  const brokenSev = broken.findings.find((f) => f.rule === 'test-file-unparseable')?.severity;
+  const edited = await analyze([{ path: 'test/a.test.ts', status: 'M', before: clean, after: broken }], undefined, {});
+  const brokenSev = edited.findings.find((f) => f.rule === 'test-file-unparseable')?.severity;
   assert.equal(brokenSev, 'block', 'breaking a file that parsed at session start still blocks');
 });
 

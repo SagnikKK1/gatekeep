@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { codeOnly, literalsOf, addedLines, rawLiterals } from '../src/oracle.js';
-import { withTree, walk, descendants, ancestor, countErrors, line, unquote, tokens, named, kids } from '../src/parser.js';
+import { withTree, walk, descendants, ancestor, countErrors, line, unquote, tokens, named, kids, normaliseImportTypes } from '../src/parser.js';
 import { git, repoRoot, headTree, isShallow, resolveTree, lsTree, catFile, diffTrees, EMPTY_TREE, GitError } from '../src/git.js';
 
 // ---------------------------------------------------------------- oracle.ts
@@ -56,6 +56,25 @@ test('withTree parses each supported grammar and countErrors sees a real syntax 
   assert.equal(clean, 0);
   const broken = await withTree('def f(:\n    return 1\n', 'python', (t) => countErrors(t));
   assert.ok(broken > 0, 'a broken file must report errors, or the unparseable rule cannot fire');
+});
+
+test('TypeScript import types parse, and the rewrite leaves offsets alone', async () => {
+  // The bundled grammar cannot parse an import type with an array or generic suffix. That is valid TypeScript,
+  // and it made real test files unparseable, which stands down every count-based rule on them.
+  const arr = await withTree("let x: import('node:fs').Dirent[] = [];", 'typescript', (t) => countErrors(t));
+  const gen = await withTree("let x: import('rxjs').Observable<number>;", 'typescript', (t) => countErrors(t));
+  assert.equal(arr, 0);
+  assert.equal(gen, 0);
+
+  // A dynamic import in expression position is left alone: it already parses, so the rewrite never runs.
+  assert.equal(normaliseImportTypes("const m = await import('./x.js');"), "const m = await import('./x.js');");
+  // The replacement is the same length, so every line and column in the file is unchanged.
+  const before = "let x: import('node:fs').Dirent[] = [];";
+  assert.equal(normaliseImportTypes(before).length, before.length);
+  assert.match(normaliseImportTypes(before), /^let x: _+\.Dirent\[\] = \[\];$/);
+
+  // Genuinely broken syntax is still broken; the rewrite is not a way to launder a parse failure.
+  assert.ok(await withTree("test('t', ( => {});", 'typescript', (t) => countErrors(t)) > 0);
 });
 
 test('walk visits children until a visitor returns false', async () => {

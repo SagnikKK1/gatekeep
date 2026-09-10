@@ -34,12 +34,41 @@ export class ParseTimeout extends Error {
 /** Some grammars go quadratic on hostile input (tens of thousands of comment lines). Cap the time; the caller treats a timeout as unreadable. */
 export const PARSE_TIMEOUT_MS = Number(process.env.GATEKEEP_PARSE_TIMEOUT_MS ?? 8000);
 /** Parse `source`, run `fn` on the tree, and free the wasm-side tree afterwards. One parser per language is reused. */
+/**
+ * The bundled TypeScript grammar parses `import('node:fs').Dirent` but not `import('node:fs').Dirent[]` or
+ * `import('rxjs').Observable<number>`: an import type carrying an array or generic suffix is a hard parse error.
+ * That is valid TypeScript, and a test file containing it was reported unparseable, which stands down every
+ * count-based rule on it and — before 0.2.1 — blocked the session outright.
+ *
+ * The import type is replaced with a run of underscores of exactly the same length, so it becomes an ordinary
+ * qualified type name (`_________________.Dirent[]`) and every line and column in the file is unchanged. Only a
+ * `import(<string literal>)` immediately followed by `.` is touched, and only in a file that has already failed to
+ * parse, so a dynamic `import('./x.js').then(...)` in working code is never rewritten.
+ */
+const IMPORT_TYPE = /\bimport\s*\(\s*(['"])[^'"\n]*\1\s*\)(?=\s*\.)/g;
+export function normaliseImportTypes(source) {
+    return source.replace(IMPORT_TYPE, (m) => '_'.repeat(m.length));
+}
 export async function withTree(source, lang, fn) {
     const parser = await parserFor(lang);
     const t0 = Date.now();
-    const tree = parser.parse(source, null, { progressCallback: () => Date.now() - t0 > PARSE_TIMEOUT_MS });
+    const budget = () => Date.now() - t0 > PARSE_TIMEOUT_MS;
+    let tree = parser.parse(source, null, { progressCallback: budget });
     if (!tree)
         throw new ParseTimeout(lang, PARSE_TIMEOUT_MS);
+    if ((lang === 'typescript' || lang === 'tsx') && countErrors(tree) > 0) {
+        const rewritten = normaliseImportTypes(source);
+        if (rewritten !== source) {
+            const second = parser.parse(rewritten, null, { progressCallback: budget });
+            // Keep it only if it is strictly better, so a rewrite that helps nothing changes nothing.
+            if (second && countErrors(second) < countErrors(tree)) {
+                tree.delete();
+                tree = second;
+            }
+            else
+                second?.delete();
+        }
+    }
     try {
         return fn(tree);
     }
