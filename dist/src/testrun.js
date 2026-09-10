@@ -7,6 +7,7 @@ import path from 'node:path';
 import { catFile } from './git.js';
 import { isTestFile } from './rules.js';
 import { langFor, matchesAny } from './lang.js';
+import { CONFIG_FILENAME } from './config.js';
 const execFileP = promisify(execFile);
 /** Directories that hold installed dependencies; linked into the scratch worktree so the suite can run there. */
 const DEP_DIRS = ['node_modules', '.venv', 'venv', '.tox', 'vendor', 'target', '.pnpm-store'];
@@ -32,6 +33,13 @@ export async function runOriginalTests(root, baseTree, curTree, changes, rules, 
         const first = await runCommand(cfg.testCommand, original, Math.max(1, deadline - Date.now()));
         if (first.error)
             return { status: 'error', originalExit: first.code, currentExit: null, originalOutput: first.output, currentOutput: '', restoredTestFiles: restored, durationMs: Date.now() - t0, reason: first.error };
+        // A command the shell could not run is a configuration problem, not a failing suite. Reporting `pytest -q` as
+        // "the tests fail" when pytest is not installed is worse than saying nothing: it accuses the agent of breaking
+        // something, and nothing was tested at all. `install` detects a test command from config files, so it can pick
+        // one whose binary is not on this machine.
+        if (NOT_RUNNABLE.has(first.code)) {
+            return { status: 'error', originalExit: first.code, currentExit: null, originalOutput: first.output, currentOutput: '', restoredTestFiles: restored, durationMs: Date.now() - t0, reason: first.code === 127 ? 'command not found' : 'found but not executable' };
+        }
         if (first.code === 0)
             return { status: 'pass', originalExit: 0, currentExit: null, originalOutput: first.output, currentOutput: '', restoredTestFiles: restored, durationMs: Date.now() - t0 };
         // Original tests fail. Does the agent's own copy pass? That difference is the finding.
@@ -47,6 +55,8 @@ export async function runOriginalTests(root, baseTree, curTree, changes, rules, 
         await fs.rm(scratch, { recursive: true, force: true });
     }
 }
+/** `sh` exits 127 when the command does not exist and 126 when it exists but cannot be executed. */
+const NOT_RUNNABLE = new Set([126, 127]);
 export function testRunFindings(r, severities) {
     if (!r)
         return [];
@@ -55,6 +65,9 @@ export function testRunFindings(r, severities) {
     const tail = (s) => s.trim().split('\n').slice(-12).join('\n');
     // A run the clock killed is a timeout wherever it happened, not an unexplained error.
     if (r.status === 'error') {
+        if (r.originalExit !== null && NOT_RUNNABLE.has(r.originalExit)) {
+            return mk('test-run-error', 'warn', `The configured test command could not be run (exit ${r.originalExit}: ${r.reason}), so nothing was tested. This is a problem with "testCommand" in ${CONFIG_FILENAME}, not a failing test suite — set it to a command that exists here, or to null to turn the original-tests check off.\n${tail(r.originalOutput)}`);
+        }
         return r.reason === 'timeout'
             ? mk('test-run-timeout', 'warn', `The test command exceeded its time limit`)
             : mk('test-run-error', 'warn', `Could not run the test command: ${r.reason}`);

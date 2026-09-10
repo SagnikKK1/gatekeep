@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { repoRoot } from './git.js';
 import { STOP_HOOK_TIMEOUT_MS } from './config.js';
@@ -156,6 +157,26 @@ function makeTarget(makefile: string): string | null {
     if (m && (m[1] === 'test' || m[1] === 'tests' || m[1] === 'check')) return m[1];
   }
   return null;
+}
+
+/**
+ * Is the first word of a detected command actually runnable here?
+ *
+ * Detection reads config files — a `[tool.pytest]` section means this is a pytest project — which says nothing about
+ * whether pytest is installed on the machine running the gate. When it is not, the suite exits 127 and, before this,
+ * the report called that "the tests fail": an accusation about the agent's work, for a suite that never ran.
+ * `install` cannot fix the environment, but it can say so at the moment it writes the config.
+ */
+export async function commandIsRunnable(command: string): Promise<boolean> {
+  const bin = command.trim().split(/\s+/)[0];
+  if (!bin) return false;
+  // A shell builtin or a path is the caller's business; only a bare binary name is worth resolving.
+  if (bin.includes('/')) return existsSync(bin);
+  return await new Promise<boolean>((resolve) => {
+    const c = spawn('sh', ['-c', `command -v ${JSON.stringify(bin)} >/dev/null 2>&1`], { stdio: 'ignore' });
+    c.on('error', () => resolve(false));
+    c.on('close', (code) => resolve(code === 0));
+  });
 }
 
 export async function detectTestCommand(root: string): Promise<DetectedTestCommand | null> {

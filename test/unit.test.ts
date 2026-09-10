@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { parseConfig, defaultConfigText } from '../src/config.js';
 import { analyze } from '../src/rules.js';
-import { installClaudeCode, uninstallClaudeCode, detectTestCommand, GATEKEEP_HOOK_RE } from '../src/install.js';
+import { installClaudeCode, uninstallClaudeCode, detectTestCommand, commandIsRunnable, GATEKEEP_HOOK_RE } from '../src/install.js';
 import { patternFor, bashWriteTargets, decideProtect, denyEntries, writeTargets } from '../src/protect.js';
 import { transcriptFromTools, classifyTool, claimFindings, CLAIM_SEVERITIES } from '../src/claims.js';
 import { appendToolEvent, readToolEvents } from '../src/session.js';
@@ -394,3 +394,34 @@ test('every fixture file is tracked by git (a fixture .gitignore must not hide i
   catch { return; } // not a git checkout (e.g. an npm tarball): nothing to check
   assert.equal(out.trim(), '', `ignored fixture files, add them with git add -f:\n${out}`);
 });
+
+test('a test command the shell cannot run is a configuration problem, not a failing suite', () => {
+  // `install` detects `pytest -q` from a config file; that says nothing about whether pytest is on this machine.
+  // Exit 127 used to be reported as "the tests fail", which accuses the agent of breaking a suite that never ran.
+  const base = { currentExit: null, originalOutput: 'sh: pytest: command not found\n', currentOutput: '', restoredTestFiles: [], durationMs: 1 };
+  const notFound = testRunFindings({ ...base, status: 'error', originalExit: 127, reason: 'command not found' }, {});
+  assert.equal(notFound.length, 1);
+  assert.equal(notFound[0]!.rule, 'test-run-error');
+  assert.match(notFound[0]!.message, /could not be run \(exit 127: command not found\)/);
+  assert.match(notFound[0]!.message, /testCommand/, 'it points at the key to change');
+  assert.match(notFound[0]!.message, /not a failing test suite/);
+
+  const notExecutable = testRunFindings({ ...base, status: 'error', originalExit: 126, reason: 'found but not executable' }, {});
+  assert.equal(notExecutable[0]!.rule, 'test-run-error');
+
+  // A suite that really did fail still reports as a failing suite.
+  const failing = testRunFindings({ ...base, status: 'fail', originalExit: 1, currentExit: 1 }, {});
+  assert.equal(failing[0]!.rule, 'tests-failing');
+  // And one that fails only with the original tests restored is still the blocking finding.
+  const oracle = testRunFindings({ ...base, status: 'fail', originalExit: 1, currentExit: 0 }, {});
+  assert.equal(oracle[0]!.rule, 'original-tests-fail');
+  assert.equal(oracle[0]!.severity, 'block');
+});
+
+test('commandIsRunnable resolves what the shell would resolve', async () => {
+  assert.equal(await commandIsRunnable('sh -c true'), true);
+  assert.equal(await commandIsRunnable('definitely-not-a-real-binary-xyz -q'), false);
+  assert.equal(await commandIsRunnable('/nonexistent/path/to/thing'), false);
+  assert.equal(await commandIsRunnable(''), false);
+});
+
