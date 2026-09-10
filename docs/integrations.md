@@ -6,7 +6,40 @@ Part of [gatekeep](../README.md): adapters, the generic protocol, overrides, the
 |---|---|---|
 | Claude Code | supported | `gatekeep install` wires SessionStart, UserPromptSubmit and Stop hooks. Both the older and newer field spellings are read (`source`/`how`, `prompt`/`prompt_text`), and the Stop payload's `last_assistant_message` is preferred over the transcript file, which is written asynchronously and can lag the turn that triggered the hook |
 | Codex CLI | wired, untested | `gatekeep install --codex` writes the same three hooks to `~/.codex/hooks.json` |
+| Claude Agent SDK | works unmodified | `query()` runs the hooks already in `.claude/settings.json`; see below |
+| Devin CLI | works unmodified, untested | it reads Claude Code's settings files and has the same Stop contract; see below |
 | Anything else | supported via the generic protocol | two commands, below |
+
+## Claude Agent SDK
+
+An SDK agent picks gatekeep up from the repository with no code. The Agent SDK docs state that omitting
+`settingSources` is *"equivalent to `["user", "project", "local"]`"* and that `query()` then *"reads the same
+filesystem settings as the Claude Code CLI"*, and, on hooks specifically: *"If you already have hooks in your
+project's `.claude/settings.json` and you set `settingSources: ["project"]`, those hooks run automatically in the
+SDK with no extra configuration."* So `gatekeep install --shared` (which writes `.claude/settings.json`) is the
+whole integration; `gatekeep install` writes `.claude/settings.local.json`, which needs `"local"` in the list.
+
+Two things to get right:
+
+- **`cwd` must be the directory that holds `.claude/`.** Project settings and hooks *"load only from `<cwd>/.claude/`
+  with no parent-directory fallback"*, so an SDK process started above or below the repository root sees nothing.
+- **`settingSources: []` turns gatekeep off** along with every other filesystem setting. If you pass the option at
+  all, include the source your hooks live in.
+
+Programmatic hooks passed to `query()` run alongside the filesystem ones rather than replacing them, so an SDK
+application can keep its own hooks and still be gated.
+
+## Devin CLI
+
+Devin's CLI reads Claude Code's settings files directly — `.claude/settings.json`, `.claude/settings.local.json`,
+`~/.claude/settings.json` and `~/.claude/settings.local.json` — under `read_config_from.claude`, which its docs
+give as enabled by default. It has `SessionStart`, `UserPromptSubmit` and `Stop` among its events and the same
+`{"decision": "block", "reason": ...}` command-hook contract. `gatekeep install` should therefore be the entire
+setup, with no gatekeep code involved.
+
+Untested against a live Devin install, and one part is expected not to work: the claims family needs a transcript,
+which Devin's documented Stop payload does not carry, so those four rules will no-op there until the recorder
+replaces transcript parsing.
 
 Any framework, script or CI job can use the generic protocol with no hook system:
 

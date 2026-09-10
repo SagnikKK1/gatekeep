@@ -53,6 +53,10 @@ steps:
   - uses: SagnikKK1/gatekeep@v1
 ```
 
+The **Claude Agent SDK** needs nothing beyond this: `query()` loads `.claude/settings.json` and its hooks from the
+filesystem unless you pass `settingSources: []`. The **Devin CLI** reads Claude Code's settings files too, so
+`gatekeep install` is the whole setup there as well. Both, with the caveats: [docs/integrations.md](docs/integrations.md).
+
 Commit `gatekeep.config.json`. `--shared` writes `.claude/settings.json` for the whole team (everyone needs `gatekeep` on PATH), `--global` writes `~/.claude/settings.json`, and `gatekeep uninstall` removes the hooks. From source: clone, then `npm install && npm run build && npm link`. Any other agent: `gatekeep session start --task "..."` before the work, `gatekeep verify --session <id>` after.
 
 ## Why
