@@ -71,7 +71,8 @@ export function parseConfig(raw: string | null | undefined): { cfg: GatekeepConf
     } else problems.push('"rules" must be an object');
   }
   const known = new Set(['$schema', 'testGlobs', 'extraTestGlobs', 'testConfigGlobs', 'ignore', 'assertionDropTolerance', 'maxBlocks', 'strict', 'rules', 'testCommand', 'testTimeoutMs', 'protectedPaths', 'extraProtectedPaths', 'judge']);
-  for (const k of Object.keys(j)) if (!known.has(k)) problems.push(`unknown key "${k}"`);
+  // JSON has no comments; a key starting with "//" is one. The generated config uses them to record what install detected.
+  for (const k of Object.keys(j)) if (!known.has(k) && !k.startsWith('//')) problems.push(`unknown key "${k}"`);
   return { cfg, problems };
 }
 
@@ -79,15 +80,25 @@ export async function readConfigText(root: string): Promise<string | null> {
   try { return await fs.readFile(path.join(root, CONFIG_FILENAME), 'utf8'); } catch { return null; }
 }
 
-export function defaultConfigText(): string {
-  return JSON.stringify({
+/**
+ * `testCommand` is filled in from whatever `gatekeep install` detected, with the detection recorded in a `//`
+ * comment key so the reader can see where it came from and delete it without guessing. Null stays null: a
+ * repository whose suite we could not identify keeps the original-tests lane off rather than getting a wrong command.
+ */
+export function defaultConfigText(detected?: { command: string; from: string } | null): string {
+  const cfg: Record<string, unknown> = {
     maxBlocks: 3,
     strict: false,
-    testCommand: null,
+  };
+  if (detected) cfg['// testCommand'] = `detected from ${detected.from}; the original tests are restored and run against the final code. Set to null to turn this off.`;
+  else cfg['// testCommand'] = 'no test command detected. Set it to run the session\'s original tests against the final code.';
+  cfg.testCommand = detected ? detected.command : null;
+  Object.assign(cfg, {
     judge: null,
     extraTestGlobs: [],
     extraProtectedPaths: [],
     ignore: [],
     rules: { ...DEFAULT_RULE_CONFIG.severities },
-  }, null, 2) + '\n';
+  });
+  return JSON.stringify(cfg, null, 2) + '\n';
 }

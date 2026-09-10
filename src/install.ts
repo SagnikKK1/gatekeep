@@ -129,3 +129,55 @@ export async function installCodex(cwd: string, target: InstallTarget['kind'] = 
   await fs.writeFile(file, JSON.stringify(settings, null, 2) + '\n');
   return { file, note: 'Codex hook support varies by version and hooks must be trusted per Codex policy; this path is untested against a live Codex install.' };
 }
+
+/**
+ * Item 23: the original-tests lane is the mitigation ImpossibleBench recommends, and it is dead unless
+ * `testCommand` is set. We cannot run a stranger's whole suite by default, so `gatekeep install` detects the
+ * command the repository already uses and writes it into the generated config, naming what it matched.
+ * Detection only ever reads files; a repository with no recognisable suite yields null and the lane stays off.
+ */
+export interface DetectedTestCommand { command: string; from: string }
+
+const NPM_TEST_PLACEHOLDER = /no test specified/i;
+
+async function readText(file: string): Promise<string | null> {
+  try { return await fs.readFile(file, 'utf8'); } catch { return null; }
+}
+
+/** A `test:` (or `check:`/`tests:`) target in a Makefile, ignoring pattern rules and `.PHONY` lines. */
+function makeTarget(makefile: string): string | null {
+  for (const line of makefile.split('\n')) {
+    const m = /^([A-Za-z0-9_.\/-]+)\s*:{1,2}(?!=)/.exec(line);
+    if (m && (m[1] === 'test' || m[1] === 'tests' || m[1] === 'check')) return m[1];
+  }
+  return null;
+}
+
+export async function detectTestCommand(root: string): Promise<DetectedTestCommand | null> {
+  const at = (...p: string[]) => path.join(root, ...p);
+
+  const pkgRaw = await readText(at('package.json'));
+  if (pkgRaw) {
+    try {
+      const scripts = (JSON.parse(pkgRaw) as { scripts?: Record<string, unknown> }).scripts;
+      const t = scripts?.test;
+      if (typeof t === 'string' && t.trim() !== '' && !NPM_TEST_PLACEHOLDER.test(t)) {
+        return { command: 'npm test --silent', from: 'package.json scripts.test' };
+      }
+    } catch { /* a package.json we cannot parse is not a signal */ }
+  }
+
+  if (await readText(at('Cargo.toml')) !== null) return { command: 'cargo test', from: 'Cargo.toml' };
+  if (await readText(at('go.mod')) !== null) return { command: 'go test ./...', from: 'go.mod' };
+
+  for (const [file, marker] of [['pyproject.toml', '[tool.pytest'], ['setup.cfg', '[tool:pytest]'], ['tox.ini', '[pytest]']] as const) {
+    const raw = await readText(at(file));
+    if (raw?.includes(marker)) return { command: 'pytest -q', from: `${file} ${marker.replace(/[[\]]/g, '')}` };
+  }
+  if (await readText(at('pytest.ini')) !== null) return { command: 'pytest -q', from: 'pytest.ini' };
+
+  const mk = (await readText(at('Makefile'))) ?? (await readText(at('makefile'))) ?? (await readText(at('GNUmakefile')));
+  if (mk) { const t = makeTarget(mk); if (t) return { command: `make ${t}`, from: `Makefile ${t}: target` }; }
+
+  return null;
+}

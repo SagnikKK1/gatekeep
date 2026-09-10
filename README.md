@@ -27,6 +27,8 @@ claude plugin install gatekeep@gatekeep
 The plugin runs a `gatekeep` already on your PATH, falls back to the plugin's own build, and only then to `npx`.
 Install the npm package too if you want the fast path.
 
+`install` also writes `gatekeep.config.json` and fills in `testCommand` from whatever the repository already uses — `package.json` `scripts.test`, `Cargo.toml`, `go.mod`, a pytest config, a `test:` target in a Makefile — printing what it matched. That turns on the strongest check here: **at every stop, the test files as they stood at session start are restored and the suite is run against the final code.** An agent that edited a test to fit its implementation fails against the tests it was given. Set `"testCommand": null` if the detected command is wrong, or too slow to run on every stop.
+
 That is the whole setup. Start a Claude Code session as usual. When the agent tries to finish after weakening a test, it sees this instead and has to fix the implementation:
 
 ```
@@ -51,7 +53,7 @@ steps:
   - uses: SagnikKK1/gatekeep@v1
 ```
 
-`install` also writes `gatekeep.config.json`; commit it. `--shared` writes `.claude/settings.json` for the whole team (everyone needs `gatekeep` on PATH), `--global` writes `~/.claude/settings.json`, and `gatekeep uninstall` removes the hooks. From source: clone, then `npm install && npm run build && npm link`. Any other agent: `gatekeep session start --task "..."` before the work, `gatekeep verify --session <id>` after.
+Commit `gatekeep.config.json`. `--shared` writes `.claude/settings.json` for the whole team (everyone needs `gatekeep` on PATH), `--global` writes `~/.claude/settings.json`, and `gatekeep uninstall` removes the hooks. From source: clone, then `npm install && npm run build && npm link`. Any other agent: `gatekeep session start --task "..."` before the work, `gatekeep verify --session <id>` after.
 
 ## Why
 
@@ -69,22 +71,28 @@ State lives in `~/.gatekeep/`, mirrored under the repository's own `.git/gatekee
 
 ## What it checks
 
-68 rules across five deterministic families, plus two opt-in layers:
+The check that does not depend on recognising a tampering pattern comes first, and `install` turns it on whenever
+it can detect your test command: the tests as they stood at session start are restored and the suite is run against
+the final code.
+
+68 rules across five deterministic families then read the diff itself, and a model-backed review you turn on reads
+it once more with the task in hand.
 
 | Family | Blocks when |
 |---|---|
+| **Original tests against final code** (`testCommand`, filled in by `install` when it can detect one) | The tests the session started with, kept where the agent cannot touch them, fail on the final code while the agent's edited tests pass. This is the check that does not depend on recognising a tampering pattern: it re-runs the original oracle |
 | **Test integrity** | An existing test is deleted, skipped, focused, made vacuous, given an early exit, or its assertions are removed, weakened (`==` to truthiness, `raises(ValueError)` to `raises(Exception)`), made unreachable, swallowed in a `try`, shadowed, or mocked away on the module under test. Renames and moves are paired by body similarity first. Python, JS/TS, Go, Java, Rust, Ruby |
 | **Check integrity** | CI steps removed or `continue-on-error` added, linter or type-checker config loosened, pre-commit hooks removed, suppression directives added, errors swallowed or validation removed in source, `.gitignore` made to hide tests |
 | **Claims** | The final message says tests pass but none ran after the last edit; files it names did not change; git history was rewritten during the session |
 | **Scope** | Protected paths edited (migrations, auth, payments, infra), new or loosened dependencies, registry changes, typosquats, secrets, a feature deleted together with its tests |
 | **Source fitted to the tests** | A new branch compares against a value only the tests used, its constants are those of one test case, a table is keyed by test values, or the implementation reads the test runner's own environment. This is the half of source-side cheating a diff can see |
-| **Original tests against final code** (opt-in `testCommand`) | The tests the session started with, kept where the agent cannot touch them, fail on the final code while the agent's edited tests pass |
 | **Model-backed review** (opt-in `judge`) | A model reads the diff with the task in hand: weakened-but-passing tests, special-cased inputs, task mismatch, text addressed to the reviewer. **Advisory** — it adds suggestions and annotates blocks, and never decides the verdict or lifts a block. Off unless you turn it on: it runs only when you set the API key it names, on your key, and never picks up an ambient login |
 
-Every rule and its default severity: [docs/rules.md](docs/rules.md). The two opt-in layers in detail: [docs/checks.md](docs/checks.md) and [docs/judge.md](docs/judge.md).
+Every rule and its default severity: [docs/rules.md](docs/rules.md). The original-tests lane and the model-backed review in detail: [docs/checks.md](docs/checks.md) and [docs/judge.md](docs/judge.md).
 
 **What the default configuration stops, and what it does not.** Out of the box the gate blocks a session that weakened
-the tests or the checks that grade it. Source-side fitting is only partly covered: on
+the tests or the checks that grade it, and — wherever `install` found a test command — re-runs the original tests
+against the final code. Source-side fitting is only partly covered: on
 [Impossible-LiveCodeBench](docs/replay.md#catch-rate-on-impossible-livecodebench) Claude Opus 5 never touched a test
 file in 304 runs and fitted the implementation instead in 55 of them, and `test-oracle-in-source` reads 19 of those —
 at `warn`, so by default they are reported rather than stopped. The other 36 hide an off-by-one inside ordinary

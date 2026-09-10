@@ -5,9 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { parseConfig } from '../src/config.js';
+import { parseConfig, defaultConfigText } from '../src/config.js';
 import { analyze } from '../src/rules.js';
-import { installClaudeCode, uninstallClaudeCode, GATEKEEP_HOOK_RE } from '../src/install.js';
+import { installClaudeCode, uninstallClaudeCode, detectTestCommand, GATEKEEP_HOOK_RE } from '../src/install.js';
 import { jsTargetHits, jsSpecifierStem, pythonTargetHits } from '../src/lang.js';
 import { formatReport, decide, type Verdict } from '../src/verdict.js';
 import { splicePackageJson, testRunFindings } from '../src/testrun.js';
@@ -82,6 +82,43 @@ test('installer is idempotent, repairs duplicates, refuses malformed settings, a
   await fs.writeFile(file, '{"oops": ,}');
   await assert.rejects(installClaudeCode('project-local', dir), /not valid JSON/);
   assert.equal(await fs.readFile(file, 'utf8'), '{"oops": ,}', 'malformed file untouched');
+});
+
+test('install detects the repository\'s own test command, and writes null when there is none', async () => {
+  const mk = async (files: Record<string, string>) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gk-detect-'));
+    for (const [f, body] of Object.entries(files)) await fs.writeFile(path.join(dir, f), body);
+    return dir;
+  };
+  const cases: [Record<string, string>, string | null, RegExp | null][] = [
+    [{ 'package.json': '{"scripts":{"test":"vitest run"}}' }, 'npm test --silent', /scripts\.test/],
+    [{ 'package.json': '{"scripts":{"test":"echo \\"Error: no test specified\\" && exit 1"}}' }, null, null],
+    [{ 'package.json': 'not json at all' }, null, null],
+    [{ 'Cargo.toml': '[package]\nname = "x"\n' }, 'cargo test', /Cargo\.toml/],
+    [{ 'go.mod': 'module example.com/x\n' }, 'go test ./...', /go\.mod/],
+    [{ 'pyproject.toml': '[tool.pytest.ini_options]\naddopts = "-q"\n' }, 'pytest -q', /pyproject/],
+    [{ 'setup.cfg': '[tool:pytest]\n' }, 'pytest -q', /setup\.cfg/],
+    [{ 'pytest.ini': '[pytest]\n' }, 'pytest -q', /pytest\.ini/],
+    [{ 'Makefile': '.PHONY: test\nbuild:\n\tcc x.c\ntest:\n\t./run\n' }, 'make test', /Makefile/],
+    [{ 'Makefile': 'CFLAGS := -O2\n%.o: %.c\n\tcc $<\n' }, null, null],
+    [{ 'README.md': 'nothing here' }, null, null],
+  ];
+  for (const [files, want, from] of cases) {
+    const got = await detectTestCommand(await mk(files));
+    assert.equal(got?.command ?? null, want, JSON.stringify(Object.keys(files)));
+    if (from) assert.match(got!.from, from);
+  }
+  // package.json wins over a Makefile in the same repo, and the detection reaches the generated config.
+  const both = await mk({ 'package.json': '{"scripts":{"test":"jest"}}', 'Makefile': 'test:\n\t./run\n' });
+  const detected = await detectTestCommand(both);
+  assert.equal(detected?.command, 'npm test --silent');
+  const text = defaultConfigText(detected);
+  const parsed = parseConfig(text);
+  assert.equal(parsed.cfg.testCommand, 'npm test --silent');
+  assert.deepEqual(parsed.problems, [], 'the "//" comment key is not an unknown-key problem');
+  assert.match(text, /"\/\/ testCommand": "detected from package\.json scripts\.test/);
+  assert.equal(parseConfig(defaultConfigText(null)).cfg.testCommand, null);
+  assert.deepEqual(parseConfig(defaultConfigText(null)).problems, []);
 });
 
 test('report caps the listing and counts by decision', () => {

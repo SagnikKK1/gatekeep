@@ -10,7 +10,7 @@ import { repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees
 import { langFor } from './lang.js';
 import { loadSession, loadSessionChecked, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, type SessionState } from './session.js';
 import { decide, writeVerdict, formatReport, type Verdict } from './verdict.js';
-import { installClaudeCode, uninstallClaudeCode, installCodex, installedHooks } from './install.js';
+import { installClaudeCode, uninstallClaudeCode, installCodex, installedHooks, detectTestCommand } from './install.js';
 import { runOriginalTests, testRunFindings, type TestRunResult } from './testrun.js';
 import { readTranscript, claimFindings } from './claims.js';
 import { applyOverrides, overridesFromPrompts, overridesFromCli, overridesFromCommits, type Override } from './override.js';
@@ -75,7 +75,7 @@ Usage:
       Render a verdict (default: the latest for this repository) as one self-contained HTML file with the
       test bodies before and after the session next to each finding. Written beside the verdict unless --out.
   gatekeep init
-      Write a ${CONFIG_FILENAME} with default rule severities.
+      Write a ${CONFIG_FILENAME} with default rule severities and the repository's detected test command.
   gatekeep --version
 
 State (sessions, verdicts) lives in ~/.gatekeep (override with GATEKEEP_HOME), never inside the repository.
@@ -394,7 +394,19 @@ async function cmdInstall(args: Args, cwd: string): Promise<number> {
   const root = await repoRoot(cwd);
   if (root) {
     const cfgPath = path.join(root, CONFIG_FILENAME);
-    if (!existsSync(cfgPath)) { await fs.writeFile(cfgPath, defaultConfigText()); console.log(`Wrote ${CONFIG_FILENAME} (commit it; the agent may not modify it during a session)`); }
+    if (!existsSync(cfgPath)) {
+      const detected = await detectTestCommand(root);
+      await fs.writeFile(cfgPath, defaultConfigText(detected));
+      console.log(`Wrote ${CONFIG_FILENAME} (commit it; the agent may not modify it during a session)`);
+      if (detected) {
+        console.log(`  testCommand: ${detected.command}  (detected from ${detected.from})`);
+        console.log('  At Stop, the tests as they stood at session start are restored and run against the final code.');
+        console.log('  Wrong command, or too slow to run every stop? Set "testCommand" to null.');
+      } else {
+        console.log('  testCommand: null — no test command detected, so the original-tests check is off.');
+        console.log(`  Set "testCommand" in ${CONFIG_FILENAME} to turn it on; it is the check that catches tests edited to fit the code.`);
+      }
+    }
   } else console.log('Note: not inside a git repository; hooks were written but gatekeep only runs inside git repositories.');
   return 0;
 }
@@ -476,8 +488,10 @@ async function main(): Promise<number> {
     case 'report': return cmdReport(args, cwd);
     case 'init': {
       const root = (await repoRoot(cwd)) ?? cwd;
-      await fs.writeFile(path.join(root, CONFIG_FILENAME), defaultConfigText());
+      const detected = await detectTestCommand(root);
+      await fs.writeFile(path.join(root, CONFIG_FILENAME), defaultConfigText(detected));
       console.log(`Wrote ${path.join(root, CONFIG_FILENAME)}`);
+      if (detected) console.log(`  testCommand: ${detected.command}  (detected from ${detected.from})`);
       return 0;
     }
     default:
