@@ -133,12 +133,19 @@ No agent was re-run: the trees, sessions and transcripts are on disk, so a verdi
   during the session are skipped for the same reason: being fitted to the tests is something that happens to code
   that already existed, and a new helper whose literals happen to appear in a test is otherwise indistinguishable.
 
-  It stays at `warn`. The false-positive gate for promoting it is clean — nothing on 249 honest agent runs, nothing
-  on 2,100 commits of real history — but it reads 19 of the 55 cheats against a measured ceiling of 34, and a rule
-  that blocks should be closer to its own ceiling first.
+  It stays at `warn`. It fires on nothing in 249 honest agent runs and nothing across 2,100 commits of real
+  history, but it reads 19 of the 55 cheats against a measured ceiling of 34, and a rule that blocks should be
+  closer to its own ceiling first.
 
-  **This rule was tuned on the corpus it is measured against.** The 2,100 commits of real history below are the
-  held-out check on that, and the fixtures pin the shapes; a second agent corpus would be a better one.
+  **Both of those zeros are in-sample, and neither is a held-out result.** The rule was written against the 304
+  agent runs, and — as the paragraph above says — the exclusions for bare identifiers, subscripts, dunder names and
+  generic test-tree filenames each exist *because* they were false positives on the replay corpus. The rule was
+  narrowed until both populations were clean, so reporting zero on them measures the narrowing, not the rule. An
+  earlier version of this section called the 2,100 commits "the held-out check"; that was wrong and is retracted.
+  The fixtures pin the shapes, but the honest statement is that **`test-oracle-in-source` has never been measured
+  on data it was not tuned against.** A fresh corpus — different repositories, same languages, never inspected
+  while changing the rule — is the missing check, and until it exists the 19/55 catch rate is the only number here
+  that is not self-confirming.
 
 `summary-files-mismatch` fired on 227 of the 304 runs in the first measurement and had to be excluded by hand: in
 this scaffold the agent is told to read `test.py` and discuss it, and naming a file it only read read to the rule
