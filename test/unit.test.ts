@@ -370,6 +370,22 @@ test('a claimed test run needs a command that actually ran, and one that did not
   assert.deepEqual(rules([{ tool: 'Bash', command: 'echo "skipping"; npm test' }]), []);
 });
 
+test('a new test file that does not parse warns; only breaking an existing one blocks', async () => {
+  // Regression for 0.2.0: `before?.parseErrors ?? 0` read as 0 for a file that never existed, so every new test
+  // file counted as having its syntax broken during the session. Our grammar build also rejects valid TypeScript
+  // import types, so writing one correct new test file was enough to be blocked.
+  const importType = "import { test } from 'node:test';\nlet x: import('node:fs').Dirent[] = [];\ntest('t', () => { if (x.length !== 0) throw new Error('x'); });\n";
+  const clean = "import { test } from 'node:test';\ntest('t', () => { if (1 !== 1) throw new Error('x'); });\n";
+
+  const added = await analyze([{ path: 'test/new.test.ts', status: 'A', after: importType }], undefined, {});
+  const addedSev = added.findings.find((f) => f.rule === 'test-file-unparseable')?.severity;
+  assert.equal(addedSev, 'warn', 'a brand-new file has no earlier tests to protect');
+
+  const broken = await analyze([{ path: 'test/a.test.ts', status: 'M', before: clean, after: importType }], undefined, {});
+  const brokenSev = broken.findings.find((f) => f.rule === 'test-file-unparseable')?.severity;
+  assert.equal(brokenSev, 'block', 'breaking a file that parsed at session start still blocks');
+});
+
 test('every fixture file is tracked by git (a fixture .gitignore must not hide its own files from CI)', () => {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
   let out = '';

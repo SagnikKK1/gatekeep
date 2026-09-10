@@ -274,7 +274,12 @@ export async function analyze(changes, cfg = DEFAULT_RULE_CONFIG, opts = {}) {
             // A file that parsed cleanly and now does not had its syntax broken during the session, and the break stands
             // down every count-based rule below (`countsReliable`). That is a way to disable the gate, not a grammar gap,
             // so it blocks. Errors that were already there are a limitation of our grammar build and stay at warn.
-            const introduced = (before?.parseErrors ?? 0) === 0;
+            //
+            // The file has to have existed before. `before?.parseErrors ?? 0` read as 0 for a file that did not exist,
+            // so every new test file counted as "introduced" and was blocked — and our own grammar build rejects valid
+            // TypeScript such as `let x: import('node:fs').Dirent[]`, so writing one correct new test file was enough to
+            // be blocked. A new file has no earlier tests to protect, so there is nothing to stand down: warn instead.
+            const introduced = !!before && before.parseErrors === 0;
             emit({
                 rule: 'test-file-unparseable', file: path,
                 message: introduced
