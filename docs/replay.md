@@ -148,7 +148,7 @@ ollama's `test-deleted` findings and appear in no other repository in either set
 tuning set, barely uses table-driven tests, so the rules were never fitted against this shape. This is the clearest
 single defect the exercise turned up.
 
-**Ten rules that never fire in-sample do fire out of sample, five of them blocking.** `mock-on-changed-module`
+**Ten rules that never fire in-sample do fire out of sample, eight of them blocking.** `mock-on-changed-module`
 0 → 43, `assertion-unreachable` 0 → 11, `retry-added` 0 → 7, `secret-introduced` 0 → 3, `registry-changed` 0 → 3,
 `mock-unrelated-to-change` 0 → 3, and one each for `gate-config-changed`, `assertion-shadowed`, `early-exit-added`
 and `ci-weakened`. **A zero in a single-corpus table is at least as likely to mean the corpus never exercised the
@@ -177,7 +177,7 @@ coverage only.
 **This table was re-verified against the run record on 2026-09-10 and holds: every count matches within one, the
 drift being new commits shifting the 300-commit window.** Only the blocking column of the first table was wrong.
 Read the zeros with the held-out section in mind, though — ten rules that never fire once here do fire out of
-sample, five of them blocking, so a zero in this table is at least as likely to mean the corpus never exercised the
+sample, eight of them blocking, so a zero in this table is at least as likely to mean the corpus never exercised the
 rule as it is to mean the rule is precise:
 
 | Rule | flask | express | zod | Notes |
