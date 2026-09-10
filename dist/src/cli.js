@@ -408,7 +408,10 @@ async function cmdHook(args, cwd) {
         const file = ['file_path', 'notebook_path', 'path', 'filename'].map((k) => ti[k]).find((v) => typeof v === 'string');
         if (cmd === undefined && file === undefined)
             return 0; // nothing the claim rules can use
-        await appendToolEvent(root, sessionId, { tool: toolName, ...(file !== undefined ? { file } : {}), ...(cmd !== undefined ? { command: cmd } : {}) }, gd);
+        // Whether the call failed, but only when the harness states it. A guess here would discount a real test run.
+        const resp = input.tool_response && typeof input.tool_response === 'object' && !Array.isArray(input.tool_response) ? input.tool_response : {};
+        const failed = resp.is_error === true || resp.interrupted === true || (typeof resp.exit_code === 'number' && resp.exit_code !== 0) ? true : undefined;
+        await appendToolEvent(root, sessionId, { tool: toolName, ...(file !== undefined ? { file } : {}), ...(cmd !== undefined ? { command: cmd } : {}), ...(failed !== undefined ? { failed } : {}) }, gd);
         return 0;
     }
     if (event === 'pre-tool-use') {

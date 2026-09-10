@@ -184,7 +184,13 @@ export async function newSession(root: string, id: string, harness: string, base
  */
 
 /** One recorded tool call, normalised across harnesses. */
-export interface RecordedTool { tool: string; file?: string; command?: string }
+export interface RecordedTool {
+  tool: string;
+  file?: string;
+  command?: string;
+  /** Set only when the harness said so outright. Left undefined when unknown, so a real run is never discounted. */
+  failed?: boolean;
+}
 
 const MAX_EVENTS = 5000, MAX_COMMAND = 4000;
 
@@ -198,6 +204,7 @@ export async function appendToolEvent(root: string, id: string, ev: RecordedTool
     tool: ev.tool.slice(0, 60),
     ...(ev.file !== undefined ? { file: ev.file.slice(0, 1024) } : {}),
     ...(ev.command !== undefined ? { command: ev.command.slice(0, MAX_COMMAND) } : {}),
+    ...(ev.failed === true ? { failed: true } : {}),
   };
   const key = await hmacKey(root, true);
   const line = JSON.stringify({ e: rec, ...(key ? { sig: createHmac('sha256', key).update(JSON.stringify(rec)).digest('hex') } : {}) }) + '\n';

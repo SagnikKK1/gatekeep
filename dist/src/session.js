@@ -184,6 +184,7 @@ export async function appendToolEvent(root, id, ev, gitDir = null) {
         tool: ev.tool.slice(0, 60),
         ...(ev.file !== undefined ? { file: ev.file.slice(0, 1024) } : {}),
         ...(ev.command !== undefined ? { command: ev.command.slice(0, MAX_COMMAND) } : {}),
+        ...(ev.failed === true ? { failed: true } : {}),
     };
     const key = await hmacKey(root, true);
     const line = JSON.stringify({ e: rec, ...(key ? { sig: createHmac('sha256', key).update(JSON.stringify(rec)).digest('hex') } : {}) }) + '\n';

@@ -46,6 +46,13 @@ function shellOnly(cmd) {
     }
     return kept.join('\n').replace(/(^|\s)-c\s+(['"])[\s\S]*?\2/g, '$1-c ARG');
 }
+/**
+ * The part of a command that actually runs something. `echo "npm test"` prints a string; it is not a test run, and
+ * counting it as one let a session claim green tests without running any.
+ */
+function runnable(cmd) {
+    return shellOnly(cmd).replace(/(^|[\n;&|(])\s*(echo|printf)\b[^\n;&|)]*/g, '$1');
+}
 /** `python -c` is usually a read-only check; it is an edit only when the inline script actually writes. */
 const INLINE_PY = /\bpython3?\s+-c\b/;
 const INLINE_PY_WRITES = /\.write(_text|_bytes|lines)?\s*\(|open\s*\([^)]*['"][rbt]*[wax]\+?[rbt]*['"]|\bshutil\.|\bos\.(remove|unlink|rename|replace|makedirs|mkdir|rmdir)\b|\bsubprocess\.|\bPath\([^)]*\)\s*\.\s*(write|touch|unlink|rename)/;
@@ -176,7 +183,7 @@ export function transcriptFromTools(tools, finalText) {
     let i = 0;
     for (const t of tools) {
         if (typeof t.command === 'string' && t.command !== '') {
-            events.push({ i: i++, kind: 'bash', command: t.command });
+            events.push({ i: i++, kind: 'bash', command: t.command, ...(t.failed === true ? { failed: true } : {}) });
             const shell = shellOnly(t.command);
             const inlinePyWrites = INLINE_PY.test(shell) && INLINE_PY_WRITES.test(t.command);
             if (BASH_WRITES.test(shell) || inlinePyWrites)
@@ -209,15 +216,19 @@ export function claimFindings(t, changes, severities, isTest) {
         return changedPaths.some((p) => norm === p || norm.endsWith('/' + p));
     };
     const lastEdit = Math.max(-1, ...t.events.filter((e) => e.kind === 'edit' && touchesTree(e)).map((e) => e.i));
-    const lastRun = (re) => Math.max(-1, ...bash.filter((e) => re.test(e.command)).map((e) => e.i));
+    const matchingRuns = (re) => bash.filter((e) => re.test(runnable(e.command)));
+    const lastRun = (re) => Math.max(-1, ...matchingRuns(re).map((e) => e.i));
     const final = t.finalText;
     // 1. "tests pass" without a test run after the last edit
     if (TEST_CLAIM.test(final)) {
+        const runs = matchingRuns(TEST_CMD);
         const run = lastRun(TEST_CMD);
         if (run < 0)
             emit({ rule: 'claim-tests-unverified', file: '.', message: `The final message says tests pass, but no test command ran in this session` });
         else if (run < lastEdit)
             emit({ rule: 'claim-tests-unverified', file: '.', message: `The final message says tests pass, but the last test run happened before the last edit` });
+        else if (runs.find((e) => e.i === run)?.failed === true)
+            emit({ rule: 'claim-tests-unverified', file: '.', message: `The final message says tests pass, but the harness reported the last test command as failed` });
     }
     // 2. build / lint / typecheck claims without a matching command
     for (const [label, claim, cmd] of [['build', BUILD_CLAIM, BUILD_CMD], ['lint', LINT_CLAIM, LINT_CMD], ['type check', TYPE_CLAIM, TYPE_CMD]]) {

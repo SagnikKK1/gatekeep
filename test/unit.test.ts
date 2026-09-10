@@ -324,6 +324,23 @@ test('the original-tests check spends one budget across both runs', async () => 
   assert.equal(testRunFindings(r, {})[0]?.rule, 'test-run-timeout');
 });
 
+test('a claimed test run needs a command that actually ran, and one that did not fail', () => {
+  const changes: FileChange[] = [{ path: 'app/calc.py', status: 'M' }];
+  const claim = 'Done, all tests pass.';
+  const rules = (tools: Parameters<typeof transcriptFromTools>[0]) =>
+    claimFindings(transcriptFromTools(tools, claim), changes, {}, (p) => /test/.test(p)).map((f) => f.rule);
+
+  // Printing a command is not running it: this was a one-line bypass of the whole claims family.
+  assert.deepEqual(rules([{ tool: 'Bash', command: 'echo "npm test"' }]), ['claim-tests-unverified']);
+  assert.deepEqual(rules([{ tool: 'Bash', command: 'printf "npm test\n"' }]), ['claim-tests-unverified']);
+  // A real run clears the claim.
+  assert.deepEqual(rules([{ tool: 'Bash', command: 'npm test' }]), []);
+  // A run the harness reported as failed does not.
+  assert.deepEqual(rules([{ tool: 'Bash', command: 'npm test', failed: true }]), ['claim-tests-unverified']);
+  // An echoed string alongside a real run must not suppress the real one.
+  assert.deepEqual(rules([{ tool: 'Bash', command: 'echo "skipping"; npm test' }]), []);
+});
+
 test('every fixture file is tracked by git (a fixture .gitignore must not hide its own files from CI)', () => {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
   let out = '';
