@@ -506,5 +506,48 @@ check "report: a non-verdict file is refused with exit 3" '[ $code -eq 3 ] && gr
 cd "$R"; sid=$(node "$CLI" session start --task "t" 2>/dev/null); node "$CLI" verify --session "$sid" >/dev/null 2>&1; rp=$(node "$CLI" report --session "$sid" 2>/dev/null); code=$?
 check "report: --session picks that session's latest verdict" '[ $code -eq 0 ] && grep -q "session <code>$sid</code>" "$rp"'
 
+echo "== gatekeep calibrate"
+# A repository whose own history contains commits the gate would have stopped: calibrate has to find them, name the
+# rule, offer the downgrade, and then actually be quiet once the downgrade is applied.
+C="$E2E/calib"; mkdir -p "$C/app"; cd "$C"; git init -q -b main
+KEY="AKIA""QZ7TBRWXYVCDMNPK"   # split so this script does not carry a key-shaped literal of its own
+echo 'X = 0' > app/a.py; git add -A; git commit -qm base
+for i in 1 2 3 4 5 6; do
+  if [ $((i % 3)) -eq 0 ]; then printf 'K%d = "%s"\n' "$i" "$KEY" >> app/a.py; else printf 'def f%d(): return %d\n' "$i" "$i" >> app/a.py; fi
+  git add -A; git commit -qm "change $i"
+done
+node "$CLI" calibrate > /tmp/gk_out 2>&1; code=$?
+check "calibrate: exit 0 and reports how many commits would have been interrupted" '[ $code -eq 0 ] && grep -qE "2 of 6 would have been interrupted" /tmp/gk_out'
+check "calibrate: lists the offending commits with the rule that did it" 'grep -q "secret-introduced" /tmp/gk_out && grep -qc "change 3" /tmp/gk_out'
+check "calibrate: says what a replay cannot cover instead of implying it covers everything" 'grep -q "Not replayed" /tmp/gk_out'
+check "calibrate: offers the downgrade" 'grep -q "gatekeep calibrate --apply" /tmp/gk_out'
+node "$CLI" calibrate --json > /tmp/gk_out.json 2>/tmp/gk_err
+check "calibrate: --json carries the totals, the blocked commits and the downgrade candidates" 'node -e "const j=require(\"/tmp/gk_out.json\");process.exit(j.commits===6&&j.commitsWithBlocks===2&&j.blocked.length===2&&j.downgradable[0]===\"secret-introduced\"?0:1)"'
+node "$CLI" calibrate 3 --json > /tmp/gk_out.json 2>/dev/null
+check "calibrate: a positional count bounds the walk" 'node -e "const j=require(\"/tmp/gk_out.json\");process.exit(j.commits+j.skipped===3?0:1)"'
+node "$CLI" calibrate --apply > /tmp/gk_out 2>&1; code=$?
+check "calibrate --apply: downgrades the noisy rule in the config" '[ $code -eq 0 ] && grep -q "Downgraded 1 rule" /tmp/gk_out && node -e "process.exit(JSON.parse(require(\"fs\").readFileSync(\"'"$C"'/gatekeep.config.json\",\"utf8\")).rules[\"secret-introduced\"]===\"warn\"?0:1)"'
+node "$CLI" calibrate --json > /tmp/gk_out.json 2>/dev/null
+check "calibrate --apply: the same history is quiet afterwards" 'node -e "const j=require(\"/tmp/gk_out.json\");process.exit(j.commitsWithBlocks===0&&j.commitsWithFindings===2?0:1)"'
+check "calibrate --apply: the written config still parses, comment key and all" 'node "$CLI" run --json 2>/dev/null | node -e "let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const v=JSON.parse(d);process.exit(v.checks.testIntegrity.findings.some(f=>f.rule===\"config-invalid\")?1:0)})"'
+D="$E2E/nogit"; mkdir -p "$D"; cd "$D"
+node "$CLI" calibrate > /tmp/gk_out 2>&1; code=$?
+check "calibrate: outside a git repository it fails with a reason, not a stack" '[ $code -eq 3 ] && grep -q "not inside a git repository" /tmp/gk_out && ! grep -q "at Object" /tmp/gk_out'
+# install runs it, but only on the install that writes the config, and never on a repository too short to calibrate.
+I="$E2E/inst"; mkdir -p "$I"; cd "$I"; git init -q -b main; echo 'X = 0' > a.py; git add -A; git commit -qm base
+node "$CLI" install > /tmp/gk_out 2>&1
+check "install: too little history says so instead of printing a meaningless rate" 'grep -q "too few to calibrate" /tmp/gk_out'
+node "$CLI" install > /tmp/gk_out 2>&1
+check "install: a re-install does not replay again, it points at the command" 'grep -q "Run .gatekeep calibrate." /tmp/gk_out && ! grep -q "would have been interrupted" /tmp/gk_out'
+rm -f "$C/gatekeep.config.json"; cd "$C"
+node "$CLI" install --no-calibrate > /tmp/gk_out 2>&1
+check "install --no-calibrate: skips the replay" '! grep -q "would have been interrupted" /tmp/gk_out'
+# Enough history for a rate to mean anything: below that threshold install declines to print one.
+L="$E2E/long"; mkdir -p "$L"; cd "$L"; git init -q -b main; echo 'X = 0' > a.py; git add -A; git commit -qm base
+for i in $(seq 1 21); do printf 'def f%d(): return %d\n' "$i" "$i" >> a.py; git add -A; git commit -qm "c$i"; done
+printf 'K = "%s"\n' "$KEY" >> a.py; git add -A; git commit -qm "leaks a key"
+node "$CLI" install > /tmp/gk_out 2>&1
+check "install: the install that writes the config replays history and reports the cost" 'grep -q "1 of 22 would have been interrupted" /tmp/gk_out && grep -q "secret-introduced" /tmp/gk_out'
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

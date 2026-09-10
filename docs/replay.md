@@ -30,6 +30,50 @@ with a regular expression, `/test/i` against the path, which also matches `lates
 counted with gatekeep's own `isTestFile()`, the same predicate the gate applies. The base shrinks from 868 to 646
 and the rate rises accordingly.
 
+### The harness is now the shipped one, 2026-09-10
+
+`scripts/corpus-fp.mjs` used to carry its own replay loop. It no longer does: the loop lives in `src/replay.ts` and
+is the same code the shipped `gatekeep calibrate` runs on a user's own history. That matters because the two had
+quietly diverged, and every difference was in the direction of measuring something the gate does not do:
+
+- the corpus loop fed the oracle rule a different set of base test files than the live gate;
+- it loaded contents for every changed path, where the gate loads only the paths its rules read (`needsContent`),
+  so it scanned files — documentation, prose, anything outside a known language or manifest — that the gate never
+  opens;
+- it told every rule that no path in the repository exists, so first-party imports looked like third-party
+  packages to the dependency and typosquat checks.
+
+A false-positive rate measured by a harness that is not the gate is not the gate's false-positive rate. **The
+stored runs in `corpus/` predate this change**, and the tables below are generated from them, so they still
+describe the old loop.
+
+All seven held-out repositories, plus `pallets/flask` from the tuning set, were re-run against the cached clones
+at their pinned HEADs:
+
+| repository | set | stored | re-run under the shipped loop |
+|---|---|---|---|
+| `yt-dlp/yt-dlp` | held-out | 4 blocking commits, 79 findings | 4, 79 — unchanged |
+| `axios/axios` | held-out | 6, 93 | 6, 93 — unchanged |
+| `rails/rails` | held-out | 11, 27 | 11, 27 — unchanged |
+| `denoland/deno` | held-out | 7, 336 | 7, **349** |
+| `excalidraw/excalidraw` | held-out | 10, 99 | **11**, 99 |
+| `ollama/ollama` | held-out | 41, 494 | **42**, **478** |
+| `Stirling-Tools/Stirling-PDF` | held-out | 28, 537 | **31**, 537 |
+| `pallets/flask` | tuning | 19, 137 | 19, 137 — unchanged |
+| **held-out total** | | **107 of 2,100 commits — 5.10%** | **112 of 2,100 — 5.33%** |
+
+Three of the seven held-out repositories are identical and none moves by more than three commits. The aggregate
+moves **up**: the corrected harness interrupts slightly more often, not less. Note that direction, because a first
+check on gatekeep's own repository suggested the opposite — this repository's `docs/` carry vendor example
+credentials that the old loop scanned and the gate never opens, which is not how most repositories look. One
+repository is not a corpus.
+
+Two things this does **not** license. It is a re-measurement, not a re-tuning: no rule was changed against these
+results, and the constraint that any *new* false-positive number needs a third corpus is untouched — the held-out
+set has now been looked at more, not less. And the tables below are still generated from the stored runs, so they
+still describe the old loop; regenerate them from a fresh run before quoting them again rather than editing the
+numbers above into them by hand. That hand-editing is what the correction above this section is about.
+
 ### The tuning set
 
 These are the seven repositories the rules were narrowed against, so **every number here is in-sample.** The

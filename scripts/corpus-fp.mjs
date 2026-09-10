@@ -16,32 +16,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { diffTrees, lsTree, BlobBatch } from '../dist/src/git.js';
-import { analyze, isTestFile, DEFAULT_RULE_CONFIG, DEFAULT_SEVERITIES } from '../dist/src/rules.js';
+import { replay as replayCommits } from '../dist/src/replay.js';
+import { DEFAULT_RULE_CONFIG, DEFAULT_SEVERITIES } from '../dist/src/rules.js';
+import { defaultConfig } from '../dist/src/config.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-
-// Mirror what the CLI hands `analyze`: unchanged test files are not in the diff, but the oracle rule needs them.
-async function baseTestFiles(repo, tree, changes) {
-  const out = new Map();
-  if (!changes.some((c) => !isTestFile(c.path, DEFAULT_RULE_CONFIG))) return out;
-  let paths;
-  try { paths = await lsTree(repo, tree); } catch { return out; }
-  const inDiff = new Set(changes.map((c) => c.path));
-  const want = paths.filter((p) => isTestFile(p, DEFAULT_RULE_CONFIG) && !inDiff.has(p)).slice(0, 400);
-  if (!want.length) return out;
-  const batch = new BlobBatch(repo);
-  try {
-    let bytes = 0;
-    for (const p of want) {
-      const b = await batch.read(tree, p).catch(() => null);
-      if (!b || b.length > 512 * 1024) continue;
-      bytes += b.length; if (bytes > 4 * 1024 * 1024) break;
-      out.set(p, b.toString('utf8'));
-    }
-  } finally { batch.close(); }
-  return out;
-}
 
 const git = (repo, args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).trim();
 
@@ -55,35 +34,28 @@ function rulesFingerprint() {
   return { version: pkg.version, rules: Object.keys(DEFAULT_SEVERITIES).length, sha256: h.slice(0, 16) };
 }
 
-/** Replay the last `n` first-parent commits. Calls `onCommit` with a record for every commit, findings or not. */
+/**
+ * Replay the last `n` first-parent commits. The loop itself lives in `src/replay.ts` and is the same code the
+ * shipped `gatekeep calibrate` runs, so a number measured here is a number a user would see on their own history.
+ * Measured under the *default* configuration, never a repository's own `gatekeep.config.json`: the corpus is a
+ * measurement of the gate we ship, not of whatever each repository would have configured.
+ */
 async function replay(repo, n, onCommit) {
-  const commits = git(repo, ['rev-list', '--first-parent', '-n', String(n), 'HEAD']).split('\n').filter(Boolean);
-  const agg = { commits: 0, skipped: 0, commitsTouchingTests: 0, commitsWithFindings: 0, commitsWithBlocks: 0, blockingCommitsTouchingTests: 0, findings: 0, byRule: {}, blockingByRule: {}, blockingCommitsByRule: {} };
-  for (const c of commits) {
-    let tree, ptree;
-    // The oldest commit in a shallow clone has no parent to diff against; that is a skip, not a clean commit.
-    try { tree = git(repo, ['rev-parse', `${c}^{tree}`]); ptree = git(repo, ['rev-parse', `${c}^^{tree}`]); }
-    catch { agg.skipped++; continue; }
-    const changes = await diffTrees(repo, ptree, tree);
-    const touchesTests = changes.some((x) => isTestFile(x.path, DEFAULT_RULE_CONFIG) || (x.oldPath !== undefined && isTestFile(x.oldPath, DEFAULT_RULE_CONFIG)));
-    const r = await analyze(changes, undefined, { baseTestFiles: await baseTestFiles(repo, ptree, changes) });
-    const findings = r.findings.map((f) => ({ rule: f.rule, severity: f.severity, file: f.file, line: f.line, test: f.test, message: f.message.slice(0, 300) }));
-    const blocks = findings.filter((f) => f.severity === 'block');
-
-    agg.commits++;
-    if (touchesTests) agg.commitsTouchingTests++;
-    if (findings.length) agg.commitsWithFindings++;
-    if (blocks.length) { agg.commitsWithBlocks++; if (touchesTests) agg.blockingCommitsTouchingTests++; }
-    // Findings cluster hard — one merge can delete eleven tests — so count commits per rule as well as findings.
-    for (const rule of new Set(blocks.map((b) => b.rule))) agg.blockingCommitsByRule[rule] = (agg.blockingCommitsByRule[rule] ?? 0) + 1;
-    agg.findings += findings.length;
-    for (const f of findings) {
-      agg.byRule[f.rule] = (agg.byRule[f.rule] ?? 0) + 1;
-      if (f.severity === 'block') agg.blockingByRule[f.rule] = (agg.blockingByRule[f.rule] ?? 0) + 1;
-    }
-    onCommit?.({ commit: c, changedFiles: changes.length, touchesTests, findings });
-  }
-  return agg;
+  const cfg = defaultConfig();
+  const t = await replayCommits(repo, cfg, {
+    n,
+    onCommit: (c) => onCommit?.({
+      commit: c.sha, changedFiles: c.changedFiles, touchesTests: c.touchesTests,
+      findings: c.findings.map((f) => ({ rule: f.rule, severity: f.severity, file: f.file, line: f.line, test: f.test, message: f.message.slice(0, 300) })),
+    }),
+  });
+  // The stored schema predates src/replay.ts and docs/corpus/*.jsonl is written against it; keep the key names.
+  return {
+    commits: t.commits, skipped: t.skipped, commitsTouchingTests: t.commitsTouchingTests,
+    commitsWithFindings: t.commitsWithFindings, commitsWithBlocks: t.commitsWithBlocks,
+    blockingCommitsTouchingTests: t.blockingCommitsTouchingTests, findings: t.findings,
+    byRule: t.findingsByRule, blockingByRule: t.blockingFindingsByRule, blockingCommitsByRule: t.blockingCommitsByRule,
+  };
 }
 
 /** Shallow enough to be quick, deep enough that 300 first-parent commits all have a parent to diff against. */

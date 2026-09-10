@@ -6,8 +6,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { analyze, needsContent, PROTECTED_FILES, type AnalysisResult } from './rules.js';
 import { parseConfig, readConfigText, defaultConfigText, CONFIG_FILENAME, type GatekeepConfig } from './config.js';
-import { repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees, catFile, lsTree, isShallow, BlobBatch, GitError, type SnapshotProblems } from './git.js';
-import { langFor } from './lang.js';
+import { git, repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees, catFile, isShallow, GitError, type SnapshotProblems } from './git.js';
 import { loadSession, loadSessionChecked, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, appendToolEvent, readToolEvents, type SessionState, type RecordedTool } from './session.js';
 import { decide, writeVerdict, formatReport, type Verdict } from './verdict.js';
 import { installClaudeCode, uninstallClaudeCode, installCodex, installedHooks, detectTestCommand, claudeSettingsFile, hookCommandPrefix } from './install.js';
@@ -18,13 +17,14 @@ import { applyOverrides, overridesFromPrompts, overridesFromCli, overridesFromCo
 import { isTestFile } from './rules.js';
 import { runJudge, type JudgeResult } from './judge.js';
 import { renderReport } from './report.js';
+import { replay, baseTestFiles, type ReplayedCommit, type ReplayTotals } from './replay.js';
 import { spawn } from 'node:child_process';
 import type { Finding, FileChange, Severity } from './model.js';
 
 const require = createRequire(import.meta.url);
 const VERSION: string = (require('../../package.json') as { version: string }).version;
-const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet', 'no-judge', 'stdout', 'open', 'off', 'dry-run']);
-const VALUE_FLAGS = ['session', 'base', 'allow', 'harness', 'id', 'task', 'transcript', 'judge', 'out'];
+const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet', 'no-judge', 'stdout', 'open', 'off', 'dry-run', 'apply', 'no-calibrate']);
+const VALUE_FLAGS = ['session', 'base', 'allow', 'harness', 'id', 'task', 'transcript', 'judge', 'out', 'commits', 'threshold'];
 
 interface Args { _: string[]; flags: Record<string, string | boolean> }
 function parseArgs(argv: string[]): Args {
@@ -61,8 +61,10 @@ Usage:
       --judge <model> runs the model-backed review for this run; --no-judge skips the configured one.
   gatekeep hook session-start|prompt|tool-use|stop [--harness claude-code|codex]
       Entry points wired into the agent's hooks. Reads the hook JSON on stdin.
-  gatekeep install [--shared | --global] [--codex]
+  gatekeep install [--shared | --global] [--codex] [--no-calibrate]
       Wire the hooks. Default: .claude/settings.local.json (machine-local, not committed).
+      On the install that writes the config, replays recent history and reports what the gate would have
+      interrupted; --no-calibrate skips that.
       --shared writes .claude/settings.json and expects \`gatekeep\` on PATH (npm link / npm i -g).
   gatekeep session start [--id <id>] [--task "<task statement>"] [--json]
       Snapshot the working tree as a baseline for any agent framework (prints the session id).
@@ -79,6 +81,10 @@ Usage:
   gatekeep report [<verdict.json>] [--session <id>] [--out <file.html>] [--stdout] [--open]
       Render a verdict (default: the latest for this repository) as one self-contained HTML file with the
       test bodies before and after the session next to each finding. Written beside the verdict unless --out.
+  gatekeep calibrate [<commits>] [--commits <n>] [--threshold <n>] [--apply] [--json]
+      Replay this repository's own history through the gate and print how many commits it would have
+      interrupted, which ones, and which rules did it. Default: the last ${DEFAULT_CALIBRATE_COMMITS} commits.
+      --apply downgrades to "warn" every rule that interrupted --threshold or more commits (default 2).
   gatekeep init
       Write a ${CONFIG_FILENAME} with default rule severities and the repository's detected test command.
   gatekeep --version
@@ -108,34 +114,6 @@ interface Analysis {
   cur: string; changes: FileChange[]; result: AnalysisResult; originalTests: TestRunResult | null; claim: string | null;
   /** Set when the agent made a claim the gate had no recorded tool calls or transcript to check it against. */
   claimsGap: 'none' | null;
-}
-
-/**
- * Test files as they stood at session start. The oracle rule compares new source against what the tests know, and
- * an agent that fits the implementation to the tests does not touch them, so they are not in the diff. Bounded:
- * a repository with thousands of test files is not worth loading for this.
- */
-const BASE_TESTS_MAX_FILES = 400, BASE_TESTS_MAX_BYTES = 4 * 1024 * 1024;
-async function baseTestFiles(root: string, base: string, cfg: GatekeepConfig, changes: FileChange[]): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  if (!changes.some((c) => !isTestFile(c.path, cfg.rules) && langFor(c.path) !== null)) return out; // no source changed
-  let paths: string[];
-  try { paths = await lsTree(root, base); } catch { return out; }
-  const inDiff = new Set(changes.filter((c) => isTestFile(c.path, cfg.rules)).map((c) => c.path));
-  const want = paths.filter((p) => isTestFile(p, cfg.rules) && !inDiff.has(p)).slice(0, BASE_TESTS_MAX_FILES);
-  if (want.length === 0) return out;
-  const batch = new BlobBatch(root);
-  try {
-    let bytes = 0;
-    for (const p of want) {
-      const b = await batch.read(base, p).catch(() => null);
-      if (!b || b.length > 512 * 1024 || b.subarray(0, 8000).includes(0)) continue;
-      bytes += b.length;
-      if (bytes > BASE_TESTS_MAX_BYTES) break;
-      out.set(p, b.toString('utf8'));
-    }
-  } finally { batch.close(); }
-  return out;
 }
 
 interface AnalysisOpts {
@@ -486,9 +464,11 @@ async function cmdInstall(args: Args, cwd: string): Promise<number> {
     console.log(`Codex: wrote ${r.file}. ${r.note}`);
   }
   const root = await repoRoot(cwd);
+  let wroteConfig = false;
   if (root) {
     const cfgPath = path.join(root, CONFIG_FILENAME);
     if (!existsSync(cfgPath)) {
+      wroteConfig = true;
       const detected = await detectTestCommand(root);
       await fs.writeFile(cfgPath, defaultConfigText(detected));
       console.log(`Wrote ${CONFIG_FILENAME} (commit it; the agent may not modify it during a session)`);
@@ -502,7 +482,32 @@ async function cmdInstall(args: Args, cwd: string): Promise<number> {
       }
     }
   } else console.log('Note: not inside a git repository; hooks were written but gatekeep only runs inside git repositories.');
+  if (root) await calibrateAtInstall(root, wroteConfig, args.flags['no-calibrate'] === true);
   return 0;
+}
+
+/**
+ * The first thing a new install should do is tell the user what it is about to cost them, on their own code.
+ * Being blocked is the worst possible first impression, and the second worst is being blocked with no idea how
+ * often it will happen again. Only on the install that created the config: `gatekeep install` is also how hooks
+ * get re-wired, and a minute of replay every time is its own kind of rude.
+ */
+const CALIBRATE_MIN_HISTORY = 20;
+async function calibrateAtInstall(root: string, wroteConfig: boolean, off: boolean): Promise<void> {
+  if (off) return;
+  if (!wroteConfig) { console.log(''); console.log('Run `gatekeep calibrate` to replay this repository\'s history and see what the gate would have interrupted.'); return; }
+  const count = parseInt((await git(root, ['rev-list', '--count', '--first-parent', 'HEAD']).catch(() => '0')).trim(), 10) || 0;
+  if (count < CALIBRATE_MIN_HISTORY) {
+    console.log('');
+    console.log(`Only ${count} commit(s) of history, too few to calibrate against. Run \`gatekeep calibrate\` once this repository has more.`);
+    return;
+  }
+  console.log('');
+  console.log(`Replaying the last ${Math.min(count, DEFAULT_CALIBRATE_COMMITS)} commits to show what this would have done to work already in this repository.`);
+  console.log('');
+  const { cfg } = await configFor(root, null, null);
+  const c = await runCalibration(root, cfg, DEFAULT_CALIBRATE_COMMITS, process.stderr.isTTY === true);
+  printCalibration(c, cfg, 2);
 }
 
 function settingsFiles(root: string): string[] {
@@ -546,6 +551,141 @@ async function cmdProtectTests(args: Args, cwd: string): Promise<number> {
   if (plan.truncated) console.log('  … more patterns than the cap; narrow the test globs or protect a directory instead');
   console.log('The agent can no longer edit these; the refusal tells it to fix the implementation instead. Turn it off with `gatekeep protect-tests --off`.');
   console.log('Re-run this after adding a test directory: the patterns are a snapshot, not a live query.');
+  return 0;
+}
+
+/**
+ * `gatekeep calibrate` — replay this repository's own history through the gate and show what it would have done,
+ * before it is ever in a position to do it.
+ *
+ * The gate's cost is invisible until it interrupts someone, and by then the interruption is the first impression.
+ * A user's own commits are the only honest-work corpus that is actually about them: our measured 11-12% blocking
+ * rate on public repositories is a fact about other people's code. So this prints their number, the commits behind
+ * it, and the rules responsible, and offers to downgrade the noisy ones.
+ *
+ * The offer's premise is that the replayed history is honest work. That is usually true and occasionally not, and
+ * a rule that blocks a lot is either noisy or is the one rule that caught something — so the commits are listed
+ * rather than summarised, and `--apply` never runs without the user having been shown them.
+ */
+const CALIBRATE_LIST_MAX = 20;
+const DEFAULT_CALIBRATE_COMMITS = 200;
+
+/** Rules that only warn cannot interrupt anything, so they are not candidates however often they fire. */
+function downgradable(totals: ReplayTotals, cfg: GatekeepConfig, threshold: number): string[] {
+  return Object.entries(totals.blockingCommitsByRule)
+    .filter(([rule, n]) => n >= threshold && (cfg.rules.severities[rule] ?? 'block') === 'block')
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([rule]) => rule);
+}
+
+async function applyDowngrades(root: string, rules: string[]): Promise<string> {
+  const file = path.join(root, CONFIG_FILENAME);
+  const raw = await readConfigText(root);
+  // JSON.parse keeps insertion order for string keys, so re-serialising preserves the generated file's layout and
+  // its `//` comment keys. A file too broken to parse is not silently replaced.
+  let j: Record<string, unknown>;
+  if (raw === null) j = JSON.parse(defaultConfigText(await detectTestCommand(root))) as Record<string, unknown>;
+  else {
+    try { j = JSON.parse(raw) as Record<string, unknown>; }
+    catch (e) { throw new UserError(`${CONFIG_FILENAME} is not valid JSON (${(e as Error).message}); fix it before applying downgrades`); }
+    if (typeof j !== 'object' || j === null || Array.isArray(j)) throw new UserError(`${CONFIG_FILENAME} must contain a JSON object`);
+  }
+  const existing = (j.rules && typeof j.rules === 'object' && !Array.isArray(j.rules)) ? j.rules as Record<string, unknown> : {};
+  j.rules = { ...existing, ...Object.fromEntries(rules.map((r) => [r, 'warn'])) };
+  j['// rules'] = `${rules.join(', ')} downgraded to "warn" by \`gatekeep calibrate --apply\` on ${new Date().toISOString().slice(0, 10)}: they interrupted this repository's own history. Set one back to "block" to restore it.`;
+  await fs.writeFile(file, JSON.stringify(j, null, 2) + '\n');
+  return file;
+}
+
+interface Calibration { totals: ReplayTotals; blocked: ReplayedCommit[]; requested: number; shallow: boolean }
+
+async function runCalibration(root: string, cfg: GatekeepConfig, n: number, progress: boolean): Promise<Calibration> {
+  const blocked: ReplayedCommit[] = [];
+  const shallow = await isShallow(root);
+  let last = 0;
+  const totals = await replay(root, cfg, {
+    n,
+    onCommit: (c) => { if (c.decision === 'block') blocked.push(c); },
+    onProgress: progress ? (done, total) => {
+      if (done !== total && done - last < 10) return;
+      last = done;
+      process.stderr.write(`\r  replaying ${done}/${total} commits…`);
+      if (done === total) process.stderr.write('\r' + ' '.repeat(34) + '\r');
+    } : undefined,
+  });
+  return { totals, blocked, requested: n, shallow };
+}
+
+function printCalibration(c: Calibration, cfg: GatekeepConfig, threshold: number, applying = false): void {
+  const { totals, blocked } = c;
+  const skipped = totals.skipped ? ` (${totals.skipped} had no parent to diff against)` : '';
+  console.log(`Replayed ${totals.commits} commit(s) of this repository's own history${skipped}.`);
+  if (c.shallow) console.log('  This is a shallow clone, so the history available is shorter than it looks.');
+  console.log('');
+  const pct = totals.commits ? ` (${(100 * totals.commitsWithBlocks / totals.commits).toFixed(1)}%)` : '';
+  console.log(`  ${totals.commitsWithBlocks} of ${totals.commits} would have been interrupted${pct}.`);
+  console.log('');
+
+  if (blocked.length) {
+    for (const b of blocked.slice(0, CALIBRATE_LIST_MAX)) {
+      const rules = [...new Set(b.findings.filter((f) => f.severity === 'block' || cfg.strict).map((f) => f.rule))];
+      console.log(`  ${b.sha.slice(0, 8)}  ${b.subject.slice(0, 52).padEnd(52)}  ${rules.join(', ')}`);
+    }
+    if (blocked.length > CALIBRATE_LIST_MAX) console.log(`  … and ${blocked.length - CALIBRATE_LIST_MAX} more (--json lists all of them)`);
+    console.log('');
+    const ranked = Object.entries(totals.blockingCommitsByRule).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    console.log('Interruptions by rule, counted in commits rather than findings:');
+    for (const [rule, n] of ranked) console.log(`  ${rule.padEnd(30)} ${String(n).padStart(3)}`);
+    console.log('');
+    const cands = downgradable(totals, cfg, threshold);
+    if (cands.length && !applying) {
+      console.log(`${cands.length} rule(s) interrupted ${threshold} or more commits. Downgrading them to "warn" keeps the finding in the`);
+      console.log('report and stops it ending a session:');
+      console.log('');
+      console.log(`  gatekeep calibrate --apply${threshold === 2 ? '' : ` --threshold ${threshold}`}`);
+      console.log('');
+      console.log('That reads the commits above as honest work. If an agent has already faked something in them, the rule that');
+      console.log('caught it is the one this turns off, so read the list before applying.');
+    } else if (!cands.length) {
+      console.log(`No rule interrupted ${threshold} or more commits, so there is nothing worth downgrading wholesale.`);
+    }
+  } else if (totals.commits) {
+    console.log('Nothing in this history would have been interrupted. The gate should be silent on work like this.');
+  } else {
+    console.log('No commits were replayed, so there is nothing to say yet.');
+  }
+  console.log('');
+  console.log('Not replayed: the original-tests lane (it runs your suite), the claims family (it needs a live session)');
+  console.log('and the model-backed judge. This covers the rules that read the diff.');
+}
+
+async function cmdCalibrate(args: Args, cwd: string): Promise<number> {
+  const root = await repoRoot(cwd);
+  if (!root) throw new UserError('not inside a git repository; calibrate replays this repository\'s own commits');
+  const n = Math.max(1, parseInt(String(args.flags.commits ?? args._[1] ?? DEFAULT_CALIBRATE_COMMITS), 10) || DEFAULT_CALIBRATE_COMMITS);
+  const threshold = Math.max(1, parseInt(String(args.flags.threshold ?? 2), 10) || 2);
+  const { cfg } = await configFor(root, null, null);
+  const json = args.flags.json === true;
+  const c = await runCalibration(root, cfg, n, !json && process.stderr.isTTY === true);
+
+  if (json) {
+    console.log(JSON.stringify({
+      repo: root, requested: n, shallow: c.shallow, ...c.totals,
+      downgradable: downgradable(c.totals, cfg, threshold),
+      blocked: c.blocked.map((b) => ({ sha: b.sha, subject: b.subject, date: b.date, changedFiles: b.changedFiles, touchesTests: b.touchesTests, rules: [...new Set(b.findings.filter((f) => f.severity === 'block' || cfg.strict).map((f) => f.rule))], findings: b.findings })),
+    }, null, 2));
+    return 0;
+  }
+  printCalibration(c, cfg, threshold, args.flags.apply === true);
+  if (args.flags.apply === true) {
+    const rules = downgradable(c.totals, cfg, threshold);
+    if (!rules.length) { console.log(''); console.log('Nothing to apply.'); return 0; }
+    const file = await applyDowngrades(root, rules);
+    console.log('');
+    console.log(`Downgraded ${rules.length} rule(s) to "warn" in ${file}:`);
+    for (const r of rules) console.log(`  ${r}`);
+    console.log('Commit it; the agent may not modify it during a session. `git diff` shows exactly what changed.');
+  }
   return 0;
 }
 
@@ -633,6 +773,7 @@ async function main(): Promise<number> {
     case 'hook': return cmdHook(args, cwd);
     case 'install': return cmdInstall(args, cwd);
     case 'protect-tests': return cmdProtectTests(args, cwd);
+    case 'calibrate': return cmdCalibrate(args, cwd);
     case 'uninstall': return cmdUninstall(args, cwd);
     case 'status': return cmdStatus(cwd);
     case 'report': return cmdReport(args, cwd);

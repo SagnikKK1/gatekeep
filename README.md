@@ -15,6 +15,7 @@ npm install -g gatekeep-agent           # or: npx gatekeep-agent install
 cd /path/to/your/project
 gatekeep install                        # wires Claude Code hooks into .claude/settings.local.json
 gatekeep status                         # confirms the hooks and shows the state directory
+gatekeep calibrate                      # what the gate would have done to your last 200 commits
 ```
 
 As a Claude Code plugin instead, which wires the same four hooks for every project without touching any repository:
@@ -28,6 +29,8 @@ The plugin runs a `gatekeep` already on your PATH, falls back to the plugin's ow
 Install the npm package too if you want the fast path.
 
 `install` also writes `gatekeep.config.json` and fills in `testCommand` from whatever the repository already uses — `package.json` `scripts.test`, `Cargo.toml`, `go.mod`, a pytest config, a `test:` target in a Makefile — printing what it matched. That turns on the strongest check here: **at every stop, the test files as they stood at session start are restored and the suite is run against the final code.** An agent that edited a test to fit its implementation fails against the tests it was given. Set `"testCommand": null` if the detected command is wrong, or too slow to run on every stop.
+
+That same first `install` then replays your recent history and prints how many of your own commits it would have interrupted, before it is ever in a position to interrupt one — see [below](#see-the-cost-before-it-costs-you). `--no-calibrate` skips it.
 
 That is the whole setup. Start a Claude Code session as usual. When the agent tries to finish after weakening a test, it sees this instead and has to fix the implementation:
 
@@ -103,6 +106,43 @@ file in 304 runs and fitted the implementation instead in 55 of them, and `test-
 at `warn`, so by default they are reported rather than stopped. The other 36 hide an off-by-one inside ordinary
 arithmetic, where only the specification says the code is wrong. The model-backed review flagged all 55, and it is
 advisory and off unless you turn it on. Turn it on for work where that matters.
+
+## See the cost before it costs you
+
+A gate you cannot predict is a gate nobody installs. `gatekeep install` replays the last 200 commits of your own
+history through the rules and tells you what it would have done to work you already shipped:
+
+```bash
+gatekeep calibrate                 # replay the last 200 commits; what would have been interrupted, and by which rule
+gatekeep calibrate 500 --json      # further back, machine-readable
+gatekeep calibrate --apply         # downgrade to "warn" every rule that interrupted 2 or more of those commits
+```
+
+```
+Replayed 200 commit(s) of this repository's own history.
+
+  7 of 200 would have been interrupted (3.5%).
+
+  4f21a9c3  Retry uploads on 502                             test-oracle-in-source
+  9ac0117e  Drop the legacy CSV path                         feature-deleted
+  ...
+
+Interruptions by rule, counted in commits rather than findings:
+  test-oracle-in-source              5
+  feature-deleted                    2
+```
+
+Our own measured blocking rate on public repositories is a fact about other people's code. This one is about
+yours. `--apply` writes the downgrades into `gatekeep.config.json` with a comment saying where they came from, so
+`git diff` shows exactly what was traded away and a later reader can put it back.
+
+It reads your history as honest work, which is the assumption to check: a rule that fires a lot is either noisy or
+is the one rule that caught something. That is why the commits are listed rather than summarised, and why nothing
+is downgraded until you have seen them.
+
+A replay covers the rules that read the diff. It cannot cover the original-tests lane (that one runs your suite),
+the claims family (no live session, so nothing was claimed) or the model-backed judge, and it says so every time
+rather than letting silence imply coverage.
 
 ## Prevention: make the test tree read-only
 
