@@ -8,7 +8,7 @@
 #   3. npx against the published package
 set -u
 event=${1:?usage: gatekeep-hook.sh <session-start|prompt|tool-use|stop>}
-pinned=gatekeep-agent@0.1.0
+pinned=gatekeep-agent@0.2.0
 
 if command -v gatekeep >/dev/null 2>&1; then
   exec gatekeep hook "$event" --harness claude-code
