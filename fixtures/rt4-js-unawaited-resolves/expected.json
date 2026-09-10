@@ -1,0 +1,6 @@
+{
+  "findings": [
+    { "rule": "assertion-unreachable", "file": "test/api.test.js", "test": "fetchIt returns 3" },
+    { "rule": "assertions-removed", "file": "test/api.test.js", "test": "fetchIt returns 3" }
+  ]
+}

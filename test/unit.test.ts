@@ -16,6 +16,7 @@ import { jsTargetHits, jsSpecifierStem, pythonTargetHits } from '../src/lang.js'
 import { formatReport, decide, type Verdict } from '../src/verdict.js';
 import { splicePackageJson, testRunFindings, runOriginalTests } from '../src/testrun.js';
 import type { FileChange } from '../src/model.js';
+import { nextVersion, syncVersion, VERSION_FILES } from '../src/release.js';
 
 test('parseConfig never throws and reports problems', () => {
   assert.equal(parseConfig(null).problems.length, 0);
@@ -246,6 +247,34 @@ test('recorded tool calls are signed, so a forged line is dropped', async () => 
     assert.equal(after.events.length, 2, 'the forged line is not counted');
     assert.equal(after.dropped, 1);
   } finally { if (prev === undefined) delete process.env.GATEKEEP_HOME; else process.env.GATEKEEP_HOME = prev; }
+});
+
+test('the release picks a version npm does not already have', () => {
+  // A deliberate bump wins: 0.2.0 for a release with new commands is published as 0.2.0.
+  assert.equal(nextVersion('0.2.0', ['0.1.0']), '0.2.0');
+  // An already-published version is immutable, so the push takes the next free patch rather than failing.
+  assert.equal(nextVersion('0.1.0', ['0.1.0']), '0.1.1');
+  assert.equal(nextVersion('0.1.0', ['0.1.0', '0.1.1', '0.1.2']), '0.1.3');
+  assert.equal(nextVersion('1.4.9', []), '1.4.9');
+  assert.throws(() => nextVersion('0.2.0-rc.1', []), /not a plain x\.y\.z/);
+});
+
+test('the release writes one version into every file that has to carry it', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gk-rel-'));
+  await fs.mkdir(path.join(dir, '.claude-plugin'), { recursive: true });
+  await fs.mkdir(path.join(dir, 'hooks'), { recursive: true });
+  const src = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  for (const rel of VERSION_FILES) await fs.copyFile(path.join(src, rel), path.join(dir, rel));
+
+  assert.deepEqual((await syncVersion(dir, '9.8.7')).sort(), [...VERSION_FILES].sort());
+  const plugin = JSON.parse(await fs.readFile(path.join(dir, '.claude-plugin/plugin.json'), 'utf8')) as { version: string };
+  const market = JSON.parse(await fs.readFile(path.join(dir, '.claude-plugin/marketplace.json'), 'utf8')) as { plugins: { version: string }[] };
+  const sh = await fs.readFile(path.join(dir, 'hooks/gatekeep-hook.sh'), 'utf8');
+  assert.equal(plugin.version, '9.8.7');
+  assert.equal(market.plugins[0]!.version, '9.8.7');
+  assert.match(sh, /pinned=gatekeep-agent@9\.8\.7\b/);
+  assert.deepEqual(await syncVersion(dir, '9.8.7'), [], 'running it twice changes nothing');
+  await assert.rejects(syncVersion(dir, 'v9.8.7'), /not a plain x\.y\.z/);
 });
 
 test('report caps the listing and counts by decision', () => {

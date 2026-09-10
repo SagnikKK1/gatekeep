@@ -29,6 +29,96 @@ jobs:
             echo 'dist/src is stale: run `npm run build` and commit the result.' >&2
             exit 1
           }
+  # Pushing to main is the release. npm used to be a separate manual step, and the published package drifted 57
+  # commits behind this branch: `gatekeep install` from npm could not do two of the things the README described.
+  # Order matters — the version bump is committed and pushed *before* `npm publish`, so a rejected push aborts the
+  # release rather than leaving npm ahead of the repository. If publishing fails after that, main simply carries a
+  # version the registry does not have yet, and the next push publishes it.
+  release:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write        # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+
+      - name: Is a release configured?
+        id: gate
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo 'No NPM_TOKEN secret, so nothing was published. Add one (an npm automation token) to turn releases on.'
+            echo 'go=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'go=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only what npm actually serves counts: the `files` list in package.json plus the sources it is built from.
+      # A change under docs/ or test/ is not a new release.
+      - name: Does this push change what npm serves?
+        id: scope
+        if: steps.gate.outputs.go == 'true'
+        run: |
+          before='${{ github.event.before }}'
+          if [ -z "$before" ] || [ "$before" = '0000000000000000000000000000000000000000' ] || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+            echo 'no usable "before" commit; treating this as a release'
+            echo 'publish=true' >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$before" '${{ github.sha }}' -- src package.json action.yml scripts/annotate.mjs README.md LICENSE; then
+            echo 'only unpackaged files changed; nothing to publish'
+            echo 'publish=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'publish=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pick the version
+        id: v
+        if: steps.scope.outputs.publish == 'true'
+        run: echo "version=$(node dist/src/release.js next)" >> "$GITHUB_OUTPUT"
+
+      - name: Commit the version, in all four places that have to agree
+        if: steps.scope.outputs.publish == 'true'
+        run: |
+          v='${{ steps.v.outputs.version }}'
+          npm version "$v" --no-git-tag-version --allow-same-version >/dev/null
+          node dist/src/release.js set "$v"
+          npm run build --silent
+          npm test --silent          # the manifest test is what proves the four agree
+          git config user.name  'Sagnik Dey'
+          git config user.email 'sagnik1.dey.official@gmail.com'
+          git add package.json package-lock.json .claude-plugin hooks/gatekeep-hook.sh dist/src
+          git diff --cached --quiet || git commit -m "Release $v"
+          git push origin HEAD:main
+
+      - name: Publish
+        if: steps.scope.outputs.publish == 'true'
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # `v1` is what `uses: SagnikKK1/gatekeep@v1` resolves to, so it has to move with every release or the Action
+      # goes stale on its own — which is what happened: it sat 22 commits back while npm sat 57 back.
+      - name: Tag
+        if: steps.scope.outputs.publish == 'true'
+        run: |
+          v='${{ steps.v.outputs.version }}'
+          git tag -a "v$v" -m "v$v"
+          git tag -f v1
+          git push origin "v$v"
+          git push -f origin v1
+
   self-gate:
     # gatekeep guarding its own pull requests
     if: github.event_name == 'pull_request'

@@ -346,7 +346,7 @@ export async function analyze(changes, cfg = DEFAULT_RULE_CONFIG, opts = {}) {
                 emit({ rule: 'early-exit-added', file: path, line: at.line, test: at.name, message: `"${at.name}" gained ${at.earlyExits - bt.earlyExits} return statement(s) before its first assertion; the assertions may never run` });
             const deadNow = at.assertions.filter((a) => !a.reachable && bt.assertions.some((b) => b.reachable && b.text === a.text));
             if (deadNow.length > 0)
-                emit({ rule: 'assertion-unreachable', file: path, line: deadNow[0].line, test: at.name, message: `${deadNow.length} assertion(s) in "${at.name}" can no longer execute (dead branch, after an unconditional exit, or in a function that is never called)`, after: deadNow.map((a) => a.text).join(' | ') });
+                emit({ rule: 'assertion-unreachable', file: path, line: deadNow[0].line, test: at.name, message: `${deadNow.length} assertion(s) in "${at.name}" can no longer execute (dead branch, after an unconditional exit, in a function that is never called, or an unawaited promise assertion that the test never waits for)`, after: deadNow.map((a) => a.text).join(' | ') });
             const nb = reachableCount(bt), na = reachableCount(at);
             if (!countsReliable)
                 continue; // syntax errors make assertion counts meaningless; test-file-unparseable already warned

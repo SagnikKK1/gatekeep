@@ -486,11 +486,30 @@ function assertionsIn(body, ctx) {
     const out = [];
     const seen = new Set();
     const assigns = assignmentsIn(body);
+    /**
+     * `expect(p).resolves.toBe(1)` without `await` builds a promise and drops it. The matcher never runs before the
+     * test ends, so the assertion cannot fail and the test is green whatever `p` resolves to. Only `resolves` and
+     * `rejects` have this shape: they are the matchers that return a promise.
+     */
+    const droppedPromise = (n) => {
+        if (!/\.\s*(resolves|rejects)\b/.test(n.text))
+            return false;
+        for (let cur = n; cur && cur.id !== body.id; cur = cur.parent) {
+            if (cur.type === 'await_expression' || cur.type === 'return_statement')
+                return false;
+            // `expect(...).resolves...` handed to something that will wait for it, e.g. Promise.all([...]) or .then().
+            if (cur.type === 'arguments' || cur.type === 'array' || cur.type === 'arrow_function' || cur.type === 'function_expression')
+                return false;
+        }
+        return true;
+    };
     const push = (n, strength, subject) => {
         if (seen.has(n.id))
             return;
         seen.add(n.id);
-        out.push({ line: line(n), strength, text: head(n.text), subject, reachable: reachable(n, body) });
+        // An assertion nobody waits for is unreachable in the only sense that matters: it never gets to fail.
+        const dropped = droppedPromise(n);
+        out.push({ line: line(n), strength: dropped ? 'weak' : strength, text: head(n.text), subject, reachable: dropped ? false : reachable(n, body) });
     };
     walk(body, (n) => {
         if (n.type === 'call_expression') {
