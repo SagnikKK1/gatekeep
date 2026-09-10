@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { repoRoot } from './git.js';
 
 const execFileP = promisify(execFile);
 
@@ -100,9 +101,16 @@ export async function installedHooks(cwd: string): Promise<{ file: string; event
   return out;
 }
 
-export async function installCodex(cwd: string): Promise<{ file: string; note: string }> {
-  const file = path.join(process.env.HOME ?? '~', '.codex', 'hooks.json');
-  const prefix = await hookCommandPrefix(false);
+/**
+ * Codex reads `<repo>/.codex/hooks.json` as well as `~/.codex/hooks.json`. The repo-level file is the one a team
+ * can commit, so it is the default here, matching the Claude Code side which also defaults to the project.
+ */
+export async function installCodex(cwd: string, target: InstallTarget['kind'] = 'project-local'): Promise<{ file: string; note: string }> {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '~';
+  const file = target === 'global'
+    ? path.join(home, '.codex', 'hooks.json')
+    : path.join((await repoRoot(cwd)) ?? cwd, '.codex', 'hooks.json');
+  const prefix = await hookCommandPrefix(target === 'project-shared');
   const settings = await readSettings(file);
   settings.hooks = settings.hooks ?? {};
   const wanted: Record<string, string> = {
@@ -119,6 +127,5 @@ export async function installCodex(cwd: string): Promise<{ file: string; note: s
   }
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, JSON.stringify(settings, null, 2) + '\n');
-  void cwd;
   return { file, note: 'Codex hook support varies by version and hooks must be trusted per Codex policy; this path is untested against a live Codex install.' };
 }

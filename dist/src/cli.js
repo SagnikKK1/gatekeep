@@ -444,7 +444,7 @@ async function cmdInstall(args, cwd) {
             console.log('  (shared settings use the `gatekeep` command; make sure it is on PATH for everyone, e.g. `npm i -g gatekeep` or `npm link`)');
     }
     if (args.flags.codex === true) {
-        const r = await installCodex(cwd);
+        const r = await installCodex(cwd, target);
         console.log(`Codex: wrote ${r.file}. ${r.note}`);
     }
     const root = await repoRoot(cwd);
