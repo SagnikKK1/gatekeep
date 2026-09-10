@@ -381,6 +381,30 @@ PATH="$NB:/usr/bin:/bin" node "$Q/dist/src/cli.js" install >/dev/null 2>&1
 check "hook command shell-quotes a path containing \$" "grep -q \"'\" .claude/settings.local.json && ! grep -q '\"node \\\\\"' .claude/settings.local.json"
 rm -rf .claude
 
+echo "== protect-tests: the prevention lane"
+cd "$R"; rm -rf .claude
+node "$CLI" protect-tests --dry-run >/tmp/gk_out 2>&1; code=$?
+check "protect-tests --dry-run lists the patterns and writes nothing" '[ $code -eq 0 ] && grep -q "tests/\*\*" /tmp/gk_out && [ ! -f .claude/settings.local.json ]'
+node "$CLI" protect-tests >/tmp/gk_out 2>&1; code=$?
+check "protect-tests writes deny entries, a sandbox deny-write list and a PreToolUse hook" '[ $code -eq 0 ] && grep -q "Edit(tests/\*\*)" .claude/settings.local.json && grep -q denyWrite .claude/settings.local.json && grep -q "hook pre-tool-use" .claude/settings.local.json'
+check "protect-tests does not wire the gate's own hooks" '! grep -q "hook stop" .claude/settings.local.json'
+out=$(hook pre-tool-use '{"session_id":"p1","cwd":"'"$R"'","tool_name":"Edit","tool_input":{"file_path":"tests/test_calc.py"}}'); code=$?
+check "the hook denies an edit to a test file and names the rule" '[ $code -eq 0 ] && echo "$out" | grep -q "\"permissionDecision\":\"deny\"" && echo "$out" | grep -q "test-write-denied"'
+out=$(hook pre-tool-use '{"session_id":"p1","cwd":"'"$R"'","tool_name":"Edit","tool_input":{"file_path":"app/calc.py"}}')
+check "the hook lets a source edit through" '[ -z "$out" ]'
+out=$(hook pre-tool-use '{"session_id":"p1","cwd":"'"$R"'","tool_name":"Bash","tool_input":{"command":"rm -f tests/test_calc.py"}}')
+check "the hook denies a shell command that would delete a test" 'echo "$out" | grep -q "test-write-denied"'
+out=$(hook pre-tool-use '{"session_id":"p1","cwd":"'"$R"'","tool_name":"Bash","tool_input":{"command":"python -m pytest tests/test_calc.py -q"}}')
+check "running the tests from the shell is not a write" '[ -z "$out" ]'
+node "$CLI" status >/tmp/gk_out 2>&1
+check "status reports the lane as on" 'grep -q "protect-tests: on" /tmp/gk_out'
+python3 -c 'import json;f=".claude/settings.local.json";s=json.load(open(f));s["permissions"]["deny"].append("Bash(curl:*)");json.dump(s,open(f,"w"),indent=2)'
+node "$CLI" protect-tests --off >/tmp/gk_out 2>&1; code=$?
+check "--off removes what it added and leaves foreign deny entries alone" '[ $code -eq 0 ] && ! grep -q "Edit(tests" .claude/settings.local.json && ! grep -q "hook pre-tool-use" .claude/settings.local.json && grep -q "Bash(curl" .claude/settings.local.json'
+node "$CLI" status >/tmp/gk_out 2>&1
+check "status reports the lane as off again" 'grep -q "protect-tests: off" /tmp/gk_out'
+rm -rf .claude
+
 echo "== shallow clone says what to do about it"
 SH="$E2E/shallow"; git clone -q --depth 1 "file://$R" "$SH" 2>/dev/null
 cd "$SH"; node "$CLI" run --base HEAD~1 >/tmp/gk_out 2>&1; code=$?

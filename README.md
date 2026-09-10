@@ -99,6 +99,26 @@ at `warn`, so by default they are reported rather than stopped. The other 36 hid
 arithmetic, where only the specification says the code is wrong. The model-backed review flagged all 55, and it is
 advisory and off unless you turn it on. Turn it on for work where that matters.
 
+## Prevention: make the test tree read-only
+
+Everything above is a gate — it reads what happened and decides afterwards. `protect-tests` is the other half: it
+takes the option away, so there is nothing to catch.
+
+```bash
+gatekeep protect-tests --dry-run   # what it would protect
+gatekeep protect-tests             # deny writes to the test tree in this project
+gatekeep protect-tests --off
+```
+
+It collapses your test files into globs (`tests/**`, `**/*.test.ts`, `**/*_test.go`) and writes three layers into
+`.claude/settings.local.json`: `permissions.deny` entries so the file tools refuse, `sandbox.filesystem.denyWrite`
+so the write is refused even when it comes from a shell command, and a `PreToolUse` hook that turns the refusal
+into something the agent can act on — *fix the implementation; if the test is genuinely wrong, say so instead of
+editing it.*
+
+Opt-in and independent of the gate: `gatekeep install` does not turn it on, neither one needs the other, and
+`--off` removes exactly the entries it added. Details and limits: [docs/protect.md](docs/protect.md).
+
 ## Run it yourself
 
 ```bash

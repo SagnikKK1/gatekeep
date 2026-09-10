@@ -8,6 +8,8 @@ import { execFileSync } from 'node:child_process';
 import { parseConfig, defaultConfigText } from '../src/config.js';
 import { analyze } from '../src/rules.js';
 import { installClaudeCode, uninstallClaudeCode, detectTestCommand, GATEKEEP_HOOK_RE } from '../src/install.js';
+import { patternFor, bashWriteTargets, decideProtect, denyEntries, writeTargets } from '../src/protect.js';
+import { DEFAULT_RULE_CONFIG } from '../src/rules.js';
 import { jsTargetHits, jsSpecifierStem, pythonTargetHits } from '../src/lang.js';
 import { formatReport, decide, type Verdict } from '../src/verdict.js';
 import { splicePackageJson, testRunFindings } from '../src/testrun.js';
@@ -119,6 +121,73 @@ test('install detects the repository\'s own test command, and writes null when t
   assert.match(text, /"\/\/ testCommand": "detected from package\.json scripts\.test/);
   assert.equal(parseConfig(defaultConfigText(null)).cfg.testCommand, null);
   assert.deepEqual(parseConfig(defaultConfigText(null)).problems, []);
+});
+
+test('protect-tests derives one pattern per family of test file', () => {
+  assert.equal(patternFor('tests/test_calc.py'), 'tests/**');
+  assert.equal(patternFor('a/b/tests/deep/test_x.py'), 'a/b/tests/**');
+  assert.equal(patternFor('src/test/java/com/X.java'), 'src/test/**');
+  assert.equal(patternFor('pkg/__tests__/x.js'), 'pkg/__tests__/**');
+  assert.equal(patternFor('src/calc.test.ts'), '**/*.test.ts');
+  assert.equal(patternFor('src/calc.spec.tsx'), '**/*.spec.tsx');
+  assert.equal(patternFor('pkg/handler_test.go'), '**/*_test.go');
+  assert.equal(patternFor('lib/test_helpers.rb'), '**/test_*.rb');
+  assert.equal(patternFor('lib/thing_spec.rb'), '**/*_spec.rb');
+  assert.equal(patternFor('src/main/java/FooTest.java'), '**/*Test*.java');
+  // Nothing recognisable: the file itself, never a pattern that would sweep in its neighbours.
+  assert.equal(patternFor('weird/oddity.py'), 'weird/oddity.py');
+  assert.deepEqual(denyEntries(['tests/**']), ['Edit(tests/**)', 'Write(tests/**)']);
+});
+
+test('the prevention hook denies writes to tests, and only writes', () => {
+  const cfg = DEFAULT_RULE_CONFIG;
+  const root = '/repo';
+  const deny = (tool: string, input: Record<string, unknown>) => decideProtect(root, root, tool, input, cfg);
+  assert.equal(deny('Edit', { file_path: 'tests/test_a.py' }).deny, true);
+  assert.match(deny('Edit', { file_path: 'tests/test_a.py' }).reason!, /test-write-denied/);
+  assert.equal(deny('Write', { file_path: '/repo/src/a.test.ts' }).deny, true);
+  assert.equal(deny('NotebookEdit', { notebook_path: 'tests/nb.ipynb' }).deny, false, 'notebooks are not test files by path');
+  assert.equal(deny('Edit', { file_path: 'src/a.ts' }).deny, false);
+  assert.equal(deny('Read', { file_path: 'tests/test_a.py' }).deny, false, 'reading a test is fine');
+  assert.equal(deny('Edit', { file_path: '/etc/hosts' }).deny, false, 'outside the repository is not our business');
+  assert.equal(deny('Edit', {}).deny, false, 'a malformed tool_input fails open');
+  // cwd-relative paths resolve against the cwd the hook was given, not the repo root.
+  assert.equal(decideProtect(root, '/repo/pkg', 'Edit', { file_path: '../tests/test_a.py' }, cfg).deny, true);
+  assert.deepEqual(writeTargets('Grep', { pattern: 'x' }), []);
+});
+
+test('the prevention hook resolves symlinked paths before deciding what is inside the repository', async () => {
+  // /tmp and /var are symlinks on macOS: a hook cwd of /var/... against a git root of /private/var/... used to
+  // make every path look external, so the lane permitted everything without saying anything.
+  const real = await fs.mkdtemp(path.join(os.tmpdir(), 'gk-prot-'));
+  await fs.mkdir(path.join(real, 'tests'), { recursive: true });
+  await fs.writeFile(path.join(real, 'tests', 'test_a.py'), 'def test_a():\n    assert 1\n');
+  const link = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'gk-link-')), 'repo');
+  await fs.symlink(real, link, 'dir');
+  const gitRoot = await fs.realpath(real);
+  const d = decideProtect(gitRoot, link, 'Edit', { file_path: 'tests/test_a.py' }, DEFAULT_RULE_CONFIG);
+  assert.equal(d.deny, true, 'a symlinked cwd must still resolve inside the repository');
+  assert.equal(d.file, 'tests/test_a.py');
+  // A file that does not exist yet still resolves: only the existing part of the path is followed.
+  assert.equal(decideProtect(gitRoot, link, 'Write', { file_path: 'tests/test_new.py' }, DEFAULT_RULE_CONFIG).deny, true);
+  assert.equal(decideProtect(gitRoot, link, 'Edit', { file_path: 'src/a.py' }, DEFAULT_RULE_CONFIG).deny, false);
+});
+
+test('the shell scan spots writes to a test path and leaves reads alone', () => {
+  const has = (cmd: string, p: string) => bashWriteTargets(cmd).includes(p);
+  assert.ok(has('rm -f tests/test_a.py', 'tests/test_a.py'));
+  assert.ok(has('mv tests/test_a.py /tmp/x', 'tests/test_a.py'));
+  assert.ok(has('echo pass > tests/test_a.py', 'tests/test_a.py'));
+  assert.ok(has('echo pass >> tests/test_a.py', 'tests/test_a.py'));
+  assert.ok(has('cat x > tests/test_a.py', 'tests/test_a.py'), 'a redirect writes whatever the command is');
+  assert.ok(has('sed -i.bak s/a/b/ tests/test_a.py', 'tests/test_a.py'));
+  assert.ok(has('git rm tests/test_a.py', 'tests/test_a.py'));
+  assert.ok(has('cd x && rm tests/test_a.py', 'tests/test_a.py'), 'each segment is scanned');
+  assert.ok(has('FOO=1 rm tests/test_a.py', 'tests/test_a.py'), 'leading assignments are skipped');
+  assert.ok(!has('cat tests/test_a.py', 'tests/test_a.py'));
+  assert.ok(!has('python -m pytest tests/test_a.py -q', 'tests/test_a.py'));
+  assert.ok(!has('grep -r assert tests/test_a.py', 'tests/test_a.py'));
+  assert.deepEqual(bashWriteTargets(''), []);
 });
 
 test('report caps the listing and counts by decision', () => {

@@ -10,7 +10,8 @@ import { repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees
 import { langFor } from './lang.js';
 import { loadSession, loadSessionChecked, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, type SessionState } from './session.js';
 import { decide, writeVerdict, formatReport, type Verdict } from './verdict.js';
-import { installClaudeCode, uninstallClaudeCode, installCodex, installedHooks, detectTestCommand } from './install.js';
+import { installClaudeCode, uninstallClaudeCode, installCodex, installedHooks, detectTestCommand, claudeSettingsFile, hookCommandPrefix } from './install.js';
+import { discoverTestTree, applyProtect, removeProtect, readProtectRecord, decideProtect, protectedIn } from './protect.js';
 import { runOriginalTests, testRunFindings, type TestRunResult } from './testrun.js';
 import { readTranscript, claimFindings } from './claims.js';
 import { applyOverrides, overridesFromPrompts, overridesFromCli, overridesFromCommits, type Override } from './override.js';
@@ -22,7 +23,7 @@ import type { Finding, FileChange, Severity } from './model.js';
 
 const require = createRequire(import.meta.url);
 const VERSION: string = (require('../../package.json') as { version: string }).version;
-const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet', 'no-judge', 'stdout', 'open']);
+const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet', 'no-judge', 'stdout', 'open', 'off', 'dry-run']);
 const VALUE_FLAGS = ['session', 'base', 'allow', 'harness', 'id', 'task', 'transcript', 'judge', 'out'];
 
 interface Args { _: string[]; flags: Record<string, string | boolean> }
@@ -68,6 +69,10 @@ Usage:
   gatekeep verify --session <id> [--transcript <path>] [--allow <rule,...>] [--json] [--fail-on-warn]
       Evaluate the working tree against that baseline: the last step any harness calls before "done".
       Exit 0 = pass, 1 = blocked, 3 = error.
+  gatekeep protect-tests [--shared | --global] [--dry-run] [--off]
+      Prevention rather than detection: make the test tree read-only for the agent. Writes permission denials,
+      a sandbox write-deny list and a PreToolUse hook that refuses the write and says why. Opt-in, and
+      independent of the gate — neither one needs the other.
   gatekeep uninstall [--shared | --global]
   gatekeep status
       Show where hooks are wired, the state directory, recent sessions and the last verdict.
@@ -305,6 +310,22 @@ async function cmdHook(args: Args, cwd: string): Promise<number> {
     });
     return 0;
   }
+  if (event === 'pre-tool-use') {
+    // The prevention lane. Fails open in every unclear case: a permission hook that misfires is worse than one that misses.
+    const toolName = typeof input.tool_name === 'string' ? input.tool_name : '';
+    const ti = input.tool_input && typeof input.tool_input === 'object' && !Array.isArray(input.tool_input) ? input.tool_input as Record<string, unknown> : {};
+    const s = await loadSession(root, sessionId, gd);
+    const { cfg } = parseConfig(s?.configText ?? await readConfigText(root));
+    const d = decideProtect(root, hookCwd, toolName, ti, cfg.rules);
+    // `hookSpecificOutput` is the current PreToolUse contract; `decision`/`reason` is the older one. Emitting both
+    // costs nothing and keeps the lane working across Claude Code versions.
+    if (d.deny) console.log(JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: d.reason },
+      decision: 'block',
+      reason: d.reason,
+    }));
+    return 0;
+  }
   if (event === 'stop') return withSessionLock(root, sessionId, () => stopHook(root, sessionId, harness, input, gd));
   throw new UserError(`unknown hook event "${event}"`);
 }
@@ -411,10 +432,61 @@ async function cmdInstall(args: Args, cwd: string): Promise<number> {
   return 0;
 }
 
+function settingsFiles(root: string): string[] {
+  return (['project-local', 'project-shared', 'global'] as const).map((k) => claudeSettingsFile(k, root));
+}
+
+async function cmdProtectTests(args: Args, cwd: string): Promise<number> {
+  const target = args.flags.global === true ? 'global' : args.flags.shared === true ? 'project-shared' : 'project-local';
+  const root = await repoRoot(cwd);
+  if (!root) throw new UserError('not inside a git repository; protect-tests needs the repository to find the test tree');
+  // Permission patterns are repository-relative, so they belong beside the repository root, not beside the cwd.
+  const file = claudeSettingsFile(target, root);
+  const { cfg } = parseConfig(await readConfigText(root));
+  const plan = await discoverTestTree(root, cfg.rules);
+  if (args.flags.off === true) {
+    const r = await removeProtect(root, file, plan.patterns);
+    console.log(r.removed || r.hookRemoved
+      ? `protect-tests off: removed ${r.removed} deny entr${r.removed === 1 ? 'y' : 'ies'}${r.hookRemoved ? ' and the PreToolUse hook' : ''} from ${file}`
+      : `protect-tests was not on in ${file}`);
+    for (const other of await protectedIn(root, settingsFiles(root).filter((f) => f !== file))) {
+      console.log(`  still wired in ${other.file}; run protect-tests --off there too`);
+    }
+    return 0;
+  }
+  if (plan.patterns.length === 0) {
+    console.log('No test files found, so there is nothing to protect. gatekeep classifies tests by path; add "extraTestGlobs" to gatekeep.config.json if yours live somewhere unusual.');
+    return 0;
+  }
+  const header = `${plan.files.length} test file(s) under ${plan.patterns.length} pattern(s):`;
+  if (args.flags['dry-run'] === true) {
+    console.log(`protect-tests would write to ${file}`);
+    console.log(header);
+    for (const p of plan.patterns) console.log(`  ${p}`);
+    if (plan.truncated) console.log('  … more patterns than the cap; narrow the test globs or protect a directory instead');
+    return 0;
+  }
+  const prefix = await hookCommandPrefix(target === 'project-shared');
+  await applyProtect(root, file, plan.patterns, `${prefix} hook pre-tool-use --harness claude-code`);
+  console.log(`protect-tests on in ${file}. ${header}`);
+  for (const p of plan.patterns) console.log(`  ${p}`);
+  if (plan.truncated) console.log('  … more patterns than the cap; narrow the test globs or protect a directory instead');
+  console.log('The agent can no longer edit these; the refusal tells it to fix the implementation instead. Turn it off with `gatekeep protect-tests --off`.');
+  console.log('Re-run this after adding a test directory: the patterns are a snapshot, not a live query.');
+  return 0;
+}
+
 async function cmdUninstall(args: Args, cwd: string): Promise<number> {
   const target = args.flags.global === true ? 'global' : args.flags.shared === true ? 'project-shared' : 'project-local';
   const r = await uninstallClaudeCode(target, cwd);
   console.log(r.removed ? `Removed ${r.removed} gatekeep hook(s) from ${r.file}` : `No gatekeep hooks in ${r.file}`);
+  // The protect lane is opt-in and separate, but leaving it wired after an uninstall would strand deny entries
+  // nobody can explain, so it comes out too — only ever the entries protect-tests recorded as its own.
+  const root = await repoRoot(cwd);
+  if (root && (await readProtectRecord(root))) {
+    const p = await removeProtect(root, claudeSettingsFile(target, root), []);
+    if (p.removed || p.hookRemoved) console.log(`Also removed the protect-tests lane (${p.removed} deny entr${p.removed === 1 ? 'y' : 'ies'})`);
+  }
   return 0;
 }
 
@@ -458,6 +530,8 @@ async function cmdStatus(cwd: string): Promise<number> {
   if (!root) { console.log('Repository: not inside a git repository'); return 0; }
   console.log(`Repository: ${root}`);
   console.log(`Config: ${existsSync(path.join(root, CONFIG_FILENAME)) ? CONFIG_FILENAME : 'none (defaults)'}`);
+  const prot = await protectedIn(root, settingsFiles(root));
+  console.log(prot.length ? `protect-tests: on — ${prot.map((p) => `${p.file} (${p.deny} deny entries)`).join(', ')}` : 'protect-tests: off (run `gatekeep protect-tests` to make the test tree read-only)');
   const { problems } = parseConfig(await readConfigText(root));
   for (const p of problems) console.log(`  config problem: ${p}`);
   console.log(`State: ${repoStateDir(root)}`);
@@ -483,6 +557,7 @@ async function main(): Promise<number> {
     case 'verify': return cmdVerify(args, cwd);
     case 'hook': return cmdHook(args, cwd);
     case 'install': return cmdInstall(args, cwd);
+    case 'protect-tests': return cmdProtectTests(args, cwd);
     case 'uninstall': return cmdUninstall(args, cwd);
     case 'status': return cmdStatus(cwd);
     case 'report': return cmdReport(args, cwd);
