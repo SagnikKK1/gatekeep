@@ -1,0 +1,5 @@
+{
+  "findings": [
+    { "rule": "file-skipped", "file": "p/calc_test.go" }
+  ]
+}

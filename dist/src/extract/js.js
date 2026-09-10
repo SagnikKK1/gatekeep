@@ -261,7 +261,7 @@ export async function extractJS(filePath, source, lang) {
                     return;
                 }
                 const marker = head(n.text.split('(')[0] ?? n.text);
-                const skipProp = props.find((p) => ['skip', 'todo', 'skipIf', 'fails', 'pending', 'todoIf'].includes(p));
+                const skipProp = props.find((p) => ['skip', 'todo', 'skipIf', 'fails', 'failing', 'pending', 'todoIf'].includes(p));
                 const skipHere = /^x/.test(ch.root) || skipProp !== undefined;
                 const conditionalSkip = skipProp === 'skipIf' || skipProp === 'todoIf';
                 const onlyHere = /^f(it|test|describe|context)$/.test(ch.root) || props.includes('only');

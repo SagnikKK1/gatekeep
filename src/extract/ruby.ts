@@ -28,6 +28,21 @@ export async function extractRuby(filePath: string, source: string): Promise<Tes
     const model: TestFileModel = { path: filePath, lang: 'ruby', tests: [], fileMocks: [], fileSkip: null, fileRetry: null, parseErrors: countErrors(tree), shadowed: [], imports: {} };
     for (const c of descendants(root, 'call')) if (c.childForFieldName('method')?.text === 'require_relative' || c.childForFieldName('method')?.text === 'require') { const a = strArg(named(c.childForFieldName('arguments'))[0]); if (a) model.imports[a.split('/').pop() ?? a] = a; }
     const ctx: Ctx = { helpers: new Set(), noopHelpers: new Set(), constants: new Map() };
+    // A skip in setup/before runs ahead of every example in the group, so the whole file stops testing.
+    for (const m of descendants(root, 'method')) {
+      const nm = m.childForFieldName('name')?.text ?? '';
+      if (!/^(setup|before_setup|before_each|before)$/.test(nm)) continue;
+      const b = m.childForFieldName('body'); if (!b) continue;
+      const sk = descendants(b, 'call').find((c) => SKIP_CALLS.has(c.childForFieldName('method')?.text ?? ''));
+      if (sk && !model.fileSkip) model.fileSkip = { line: line(sk), marker: `${nm} calls ${sk.childForFieldName('method')?.text}: every test in this file is skipped` };
+    }
+    for (const blk of descendants(root, 'call')) {
+      if (!/^(before|around)$/.test(blk.childForFieldName('method')?.text ?? '')) continue;
+      const body = blk.childForFieldName('block') ?? blk.childForFieldName('do_block');
+      if (!body) continue;
+      const sk = descendants(body, 'call').find((c) => SKIP_CALLS.has(c.childForFieldName('method')?.text ?? ''));
+      if (sk && !model.fileSkip) model.fileSkip = { line: line(sk), marker: `a before hook calls ${sk.childForFieldName('method')?.text}: every example in this file is skipped` };
+    }
     for (const a of descendants(root, 'assignment')) { const l = a.childForFieldName('left'); const r = a.childForFieldName('right'); if (l?.type === 'constant' && r && !ancestor(a, ['method', 'do_block', 'block'])) ctx.constants.set(l.text, normalizeBody(r.text)); }
     // local helper methods that assert: `def assert_json(...)` or any `def` whose body asserts
     for (const m of descendants(root, 'method')) {

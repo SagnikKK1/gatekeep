@@ -47,6 +47,18 @@ export async function extractGo(filePath: string, source: string): Promise<TestF
     // a build constraint that excludes the file from every normal build hides all of its tests
     const constraint = source.split('\n').slice(0, 20).find((l) => /^\/\/\s*(go:build|\+build)\s+(ignore|never|false|\w+_disabled)/.test(l.trim()));
     if (constraint) model.fileSkip = { line: source.split('\n').indexOf(constraint) + 1, marker: constraint.trim().slice(0, 80) };
+    // TestMain owns the package's test run. If it never calls m.Run(), nothing in the package runs.
+    for (const fn of descendants(root, 'function_declaration')) {
+      if (fn.childForFieldName('name')?.text !== 'TestMain') continue;
+      const b = fn.childForFieldName('body'); if (!b) continue;
+      const mVar = /\(\s*(\w+)\s+\*testing\.M\b/.exec(fn.childForFieldName('parameters')?.text ?? '')?.[1];
+      if (!mVar) continue;
+      const runs = descendants(b, 'call_expression').some((c) => {
+        const f = c.childForFieldName('function');
+        return f?.type === 'selector_expression' && f.childForFieldName('operand')?.text === mVar && f.childForFieldName('field')?.text === 'Run';
+      });
+      if (!runs) model.fileSkip = { line: line(fn), marker: `TestMain does not call ${mVar}.Run(): no test in this package runs` };
+    }
     // imports: alias or last path segment -> import path
     for (const spec of descendants(root, 'import_spec')) {
       const p = spec.childForFieldName('path'); const nm = spec.childForFieldName('name');

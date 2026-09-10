@@ -80,6 +80,9 @@ export async function extractRust(filePath, source) {
                 const t = a.text;
                 if (/^#\[\s*ignore\b/.test(t))
                     tc.skip = { line: line(a), marker: head(t), conditional: false };
+                // `#[cfg_attr(target_os = "linux", ignore)]` applies #[ignore] under a condition; the test stops running.
+                else if (/^#\[\s*cfg_attr\s*\(/.test(t) && /,\s*ignore\s*[,)]/.test(t))
+                    tc.skip = { line: line(a), marker: head(t), conditional: true };
                 if (/^#\[\s*cfg\s*\(/.test(t) && !/cfg\s*\(\s*test\s*\)/.test(t))
                     tc.skip = tc.skip ?? { line: line(a), marker: head(t), conditional: !/cfg\s*\(\s*(any\s*\(\s*\)|not\s*\(\s*all\s*\(\s*\)\s*\))\s*\)/.test(t) };
                 if (/^#\[\s*(rstest|test_case|case)\b/.test(t)) {
