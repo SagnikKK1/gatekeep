@@ -1,5 +1,6 @@
 name: ci
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -100,6 +101,9 @@ jobs:
           git config user.email 'sagnik1.dey.official@gmail.com'
           git add package.json package-lock.json .claude-plugin hooks/gatekeep-hook.sh dist/src
           git diff --cached --quiet || git commit -m "Release $v"
+          # Someone may have pushed while the matrix ran. The version commit touches only version fields, so
+          # replaying it on top is safe, and a bare push would abort the release over an unrelated commit.
+          git pull --rebase origin main
           git push origin HEAD:main
 
       - name: Publish
