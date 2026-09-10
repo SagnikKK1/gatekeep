@@ -30,11 +30,12 @@ jobs:
             echo 'dist/src is stale: run `npm run build` and commit the result.' >&2
             exit 1
           }
-  # Pushing to main is the release. npm used to be a separate manual step, and the published package drifted 57
-  # commits behind this branch: `gatekeep install` from npm could not do two of the things the README described.
+  # This job is the release, and only a manual dispatch reaches it — see the `if:` below. npm used to be a separate
+  # manual step, and the published package drifted 57 commits behind this branch: `gatekeep install` from npm could
+  # not do two of the things the README described.
   # Order matters — the version bump is committed and pushed *before* `npm publish`, so a rejected push aborts the
   # release rather than leaving npm ahead of the repository. If publishing fails after that, main simply carries a
-  # version the registry does not have yet, and the next push publishes it.
+  # version the registry does not have yet, and the next release publishes it.
   release:
     needs: test
     # Releasing is deliberate. A push used to publish, and on 2026-09-10 that put a blocking regression (0.2.0) on
