@@ -37,7 +37,11 @@ jobs:
   # version the registry does not have yet, and the next push publishes it.
   release:
     needs: test
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    # Releasing is deliberate. A push used to publish, and on 2026-09-10 that put a blocking regression (0.2.0) on
+    # npm within minutes of the commit. Staging to a `next` dist-tag was the obvious alternative, but `npm dist-tag`
+    # is not supported under OIDC, so promoting later would mean bringing the long-lived token back. A manual run is
+    # the version that keeps trusted publishing.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
       group: release
@@ -110,6 +114,38 @@ jobs:
           git tag -f v1
           git push origin "v$v"
           git push -f origin v1
+
+  # npm once sat 57 commits behind main. Publishing on every push fixed that and created a worse problem, so the
+  # drift is reported instead: every push says whether a release is owed, in the run summary.
+  release-pending:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Is a release owed?
+        run: |
+          local_v=$(node -p "require('./package.json').version")
+          npm_v=$(npm view gatekeep-agent version 2>/dev/null || echo 'none')
+          if [ "$local_v" = "$npm_v" ]; then
+            echo "npm is current at $npm_v." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          behind=$(git rev-list --count "v$npm_v..HEAD" 2>/dev/null || echo '?')
+          {
+            echo "### A release is owed"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| npm serves | \`$npm_v\` |"
+            echo "| main is at | \`$local_v\` |"
+            echo "| commits since the published version | $behind |"
+            echo ""
+            echo 'Run the workflow manually to publish: `gh workflow run ci.yml --ref main`'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   self-gate:
     # gatekeep guarding its own pull requests
