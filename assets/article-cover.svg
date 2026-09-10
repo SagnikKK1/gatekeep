@@ -1,41 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Cover: What a frontier coding agent actually does when the tests are wrong. Zero of 304 runs modified a test file; 54 percent fitted the implementation to the wrong test instead.">
-  <title>What a frontier coding agent actually does when the tests are wrong</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Claude Opus 5 across 304 runs of Impossible-LiveCodeBench: zero runs modified a test file; 54 percent fitted the implementation to the wrong test instead.">
+  <title>Zero test files modified in 304 runs; 54 percent fitted the implementation instead</title>
 
   <rect x="0" y="0" width="1200" height="630" fill="#0d1117"/>
-
-  <!-- A single accent rule down the left edge, the same green the terminal uses for a passing claim. -->
   <rect x="0" y="0" width="6" height="630" fill="#3fb950"/>
 
-  <!-- Faint grid, so the flat background has some texture at full size but disappears in a thumbnail. -->
-  <g stroke="#161b22" stroke-width="1">
-    <line x1="0" y1="150" x2="1200" y2="150"/>
-    <line x1="0" y1="330" x2="1200" y2="330"/>
-    <line x1="0" y1="480" x2="1200" y2="480"/>
-    <line x1="660" y1="330" x2="660" y2="480"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace">
+    <text x="72" y="104" fill="#6e7681" font-size="20" letter-spacing="3.4">IMPOSSIBLE-LIVECODEBENCH  ·  CLAUDE OPUS 5  ·  304 RUNS</text>
   </g>
+
+  <!-- The two findings carry the image on their own now: it never edited a test, it bent the source instead. -->
+  <line x1="636" y1="248" x2="636" y2="430" stroke="#21262d" stroke-width="1"/>
 
   <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace">
-    <text x="72" y="92" fill="#6e7681" font-size="19" letter-spacing="3.2">IMPOSSIBLE-LIVECODEBENCH  ·  CLAUDE OPUS 5  ·  304 RUNS</text>
-  </g>
+    <text x="72" y="360" fill="#3fb950" font-size="104" font-weight="700">0 of 304</text>
+    <text x="74" y="412" fill="#8b949e" font-size="21">runs modified a test file</text>
 
-  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-weight="700">
-    <text x="72" y="222" fill="#e6edf3" font-size="56">What a frontier coding agent</text>
-    <text x="72" y="288" fill="#e6edf3" font-size="56">actually does when the tests are wrong</text>
-  </g>
-
-  <!-- Two findings, side by side: it never edited a test, and it bent the source instead. -->
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace">
-    <text x="72" y="398" fill="#3fb950" font-size="62" font-weight="700">0 of 304</text>
-    <text x="72" y="436" fill="#8b949e" font-size="20">runs modified a test file</text>
-
-    <text x="700" y="398" fill="#ff7b72" font-size="62" font-weight="700">54%</text>
-    <text x="700" y="436" fill="#8b949e" font-size="20">fitted the implementation</text>
-    <text x="700" y="462" fill="#8b949e" font-size="20">to the wrong test instead</text>
+    <text x="700" y="360" fill="#ff7b72" font-size="104" font-weight="700">54%</text>
+    <text x="702" y="412" fill="#8b949e" font-size="21">fitted the implementation</text>
+    <text x="702" y="442" fill="#8b949e" font-size="21">to the wrong test instead</text>
   </g>
 
   <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="20">
-    <text x="72" y="548" fill="#c9d1d9" font-weight="700">gatekeep</text>
-    <text x="176" y="548" fill="#6e7681">·  every run record published, Apache-2.0</text>
-    <text x="1128" y="548" fill="#6e7681" text-anchor="end">github.com/SagnikKK1/gatekeep</text>
+    <text x="72" y="562" fill="#c9d1d9" font-weight="700">gatekeep</text>
+    <text x="180" y="562" fill="#6e7681">·  every run record published, Apache-2.0</text>
+    <text x="1128" y="562" fill="#6e7681" text-anchor="end">github.com/SagnikKK1/gatekeep</text>
   </g>
 </svg>
