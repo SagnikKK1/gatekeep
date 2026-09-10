@@ -12,6 +12,7 @@ const RSPEC_WEAK = new Set(['be_truthy', 'be_falsey', 'be_falsy', 'be_nil', 'be_
 const MINITEST_STRONG = new Set(['assert_equal', 'assert_same', 'assert_in_delta', 'assert_in_epsilon', 'assert_includes', 'assert_match', 'assert_raises', 'assert_raise', 'assert_throws', 'assert_output', 'assert_send', 'assert_operator', 'assert_kind_of', 'refute_equal', 'refute_same', 'refute_includes', 'refute_match', 'refute_in_delta', 'assert_not_equal', 'assert_not_includes', 'assert_no_match', 'assert_difference', 'assert_no_difference', 'assert_changes', 'assert_no_changes', 'assert_response', 'assert_redirected_to', 'assert_select', 'assert_dom_equal', 'assert_template', 'assert_enqueued_with', 'assert_performed_with', 'assert_emails', 'assert_predicate', 'refute_predicate', 'must_equal', 'must_match', 'must_include', 'must_raise', 'must_be_within_delta', 'must_be_close_to', 'wont_equal', 'wont_include', 'must_output', 'must_be_kind_of', 'must_respond_to', 'assert_instance_of', 'refute_instance_of', 'assert_pattern']);
 const MINITEST_WEAK = new Set(['assert', 'refute', 'assert_nil', 'refute_nil', 'assert_not_nil', 'assert_not', 'assert_empty', 'refute_empty', 'assert_not_empty', 'assert_respond_to', 'assert_nothing_raised', 'assert_true', 'assert_false', 'flunk', 'must_be_nil', 'wont_be_nil', 'must_be_empty', 'wont_be_empty', 'must_be', 'wont_be', 'assert_block', 'assert_valid']);
 const SKIP_CALLS = new Set(['skip', 'pending', 'omit', 'skip_until', 'xskip']);
+const HELPER_NAME = /^(assert|check|verify|expect|ensure|validate)_/;
 export async function extractRuby(filePath, source) {
     return withTree(source, 'ruby', (tree) => {
         const root = tree.rootNode;
@@ -22,7 +23,7 @@ export async function extractRuby(filePath, source) {
                 if (a)
                     model.imports[a.split('/').pop() ?? a] = a;
             }
-        const ctx = { helpers: new Set(), constants: new Map() };
+        const ctx = { helpers: new Set(), noopHelpers: new Set(), constants: new Map() };
         for (const a of descendants(root, 'assignment')) {
             const l = a.childForFieldName('left');
             const r = a.childForFieldName('right');
@@ -33,8 +34,16 @@ export async function extractRuby(filePath, source) {
         for (const m of descendants(root, 'method')) {
             const nm = m.childForFieldName('name')?.text ?? '';
             const b = m.childForFieldName('body');
-            if (nm && !/^test_/.test(nm) && b && (assertionsIn(b, ctx).length > 0 || descendants(b, 'call').some((c) => /^(raise|flunk|fail)$/.test(c.childForFieldName('method')?.text ?? ''))))
+            if (!nm || /^test_/.test(nm))
+                continue;
+            if (b && (assertionsIn(b, ctx).length > 0 || descendants(b, 'call').some((c) => /^(raise|flunk|fail)$/.test(c.childForFieldName('method')?.text ?? ''))))
                 ctx.helpers.add(nm);
+            // Named like an assertion but unable to fail. It is credited on its name alone below, so without this
+            // `def check_value(got, want); end` stands in for a real check.
+            else if (HELPER_NAME.test(nm)) {
+                ctx.noopHelpers.add(nm);
+                model.shadowed.push({ line: line(m), name: nm });
+            }
         }
         const expandData = (t) => { const k = t.trim(); return ctx.constants.has(k) ? `${k}\n${ctx.constants.get(k)}` : t; };
         const visitScope = (node, scope) => {
@@ -280,7 +289,9 @@ function assertionsIn(body, ctx) {
             }
         }
         // local asserting helpers and conventionally named ones
-        if (!recvNode && (ctx.helpers.has(method) || /^(assert|check|verify|expect|ensure|validate)_/.test(method))) {
+        if (!recvNode && ctx.noopHelpers.has(method))
+            return false;
+        if (!recvNode && (ctx.helpers.has(method) || HELPER_NAME.test(method))) {
             push(n, 'strong', args[0]?.text ?? '');
             return false;
         }

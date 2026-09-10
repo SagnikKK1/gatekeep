@@ -18,19 +18,25 @@ const MINITEST_WEAK = new Set(['assert', 'refute', 'assert_nil', 'refute_nil', '
 const SKIP_CALLS = new Set(['skip', 'pending', 'omit', 'skip_until', 'xskip']);
 
 interface Scope { path: string[]; skip: TestCase['skip']; only: TestCase['only']; data: string }
-interface Ctx { helpers: Set<string>; constants: Map<string, string> }
+const HELPER_NAME = /^(assert|check|verify|expect|ensure|validate)_/;
+
+interface Ctx { helpers: Set<string>; noopHelpers: Set<string>; constants: Map<string, string> }
 
 export async function extractRuby(filePath: string, source: string): Promise<TestFileModel> {
   return withTree(source, 'ruby', (tree) => {
     const root = tree.rootNode;
     const model: TestFileModel = { path: filePath, lang: 'ruby', tests: [], fileMocks: [], fileSkip: null, fileRetry: null, parseErrors: countErrors(tree), shadowed: [], imports: {} };
     for (const c of descendants(root, 'call')) if (c.childForFieldName('method')?.text === 'require_relative' || c.childForFieldName('method')?.text === 'require') { const a = strArg(named(c.childForFieldName('arguments'))[0]); if (a) model.imports[a.split('/').pop() ?? a] = a; }
-    const ctx: Ctx = { helpers: new Set(), constants: new Map() };
+    const ctx: Ctx = { helpers: new Set(), noopHelpers: new Set(), constants: new Map() };
     for (const a of descendants(root, 'assignment')) { const l = a.childForFieldName('left'); const r = a.childForFieldName('right'); if (l?.type === 'constant' && r && !ancestor(a, ['method', 'do_block', 'block'])) ctx.constants.set(l.text, normalizeBody(r.text)); }
     // local helper methods that assert: `def assert_json(...)` or any `def` whose body asserts
     for (const m of descendants(root, 'method')) {
       const nm = m.childForFieldName('name')?.text ?? ''; const b = m.childForFieldName('body');
-      if (nm && !/^test_/.test(nm) && b && (assertionsIn(b, ctx).length > 0 || descendants(b, 'call').some((c) => /^(raise|flunk|fail)$/.test(c.childForFieldName('method')?.text ?? '')))) ctx.helpers.add(nm);
+      if (!nm || /^test_/.test(nm)) continue;
+      if (b && (assertionsIn(b, ctx).length > 0 || descendants(b, 'call').some((c) => /^(raise|flunk|fail)$/.test(c.childForFieldName('method')?.text ?? '')))) ctx.helpers.add(nm);
+      // Named like an assertion but unable to fail. It is credited on its name alone below, so without this
+      // `def check_value(got, want); end` stands in for a real check.
+      else if (HELPER_NAME.test(nm)) { ctx.noopHelpers.add(nm); model.shadowed.push({ line: line(m), name: nm }); }
     }
     const expandData = (t: string): string => { const k = t.trim(); return ctx.constants.has(k) ? `${k}\n${ctx.constants.get(k)}` : t; };
 
@@ -214,7 +220,8 @@ function assertionsIn(body: SyntaxNode, ctx: Ctx): Assertion[] {
       }
     }
     // local asserting helpers and conventionally named ones
-    if (!recvNode && (ctx.helpers.has(method) || /^(assert|check|verify|expect|ensure|validate)_/.test(method))) { push(n, 'strong', args[0]?.text ?? ''); return false; }
+    if (!recvNode && ctx.noopHelpers.has(method)) return false;
+    if (!recvNode && (ctx.helpers.has(method) || HELPER_NAME.test(method))) { push(n, 'strong', args[0]?.text ?? ''); return false; }
   });
   return out;
 }

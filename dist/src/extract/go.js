@@ -6,6 +6,32 @@ import { withTree, walk, descendants, ancestor, countErrors, line, unquote, name
 const TESTIFY_STRONG = new Set(['Equal', 'NotEqual', 'EqualValues', 'Exactly', 'Len', 'Contains', 'NotContains', 'ElementsMatch', 'JSONEq', 'YAMLEq', 'ErrorIs', 'ErrorAs', 'ErrorContains', 'EqualError', 'NoError', 'Error', 'NoErrorf', 'Errorf', 'InDelta', 'InEpsilon', 'Regexp', 'Same', 'NotSame', 'Subset', 'NotSubset', 'Greater', 'GreaterOrEqual', 'Less', 'LessOrEqual', 'WithinDuration', 'EqualExportedValues', 'Equalf', 'NotEqualf', 'Lenf', 'Containsf', 'ErrorIsf', 'EqualErrorf', 'InDeltaf', 'Regexpf', 'Positive', 'Negative', 'FileExists', 'DirExists', 'HTTPStatusCode', 'HTTPBodyContains']);
 const TESTIFY_WEAK = new Set(['True', 'False', 'Nil', 'NotNil', 'Empty', 'NotEmpty', 'Zero', 'NotZero', 'IsType', 'Implements', 'Truef', 'Falsef', 'Nilf', 'NotNilf', 'Emptyf', 'NotEmptyf', 'Panics', 'NotPanics', 'Eventually', 'Never', 'Condition', 'Fail', 'FailNow']);
 const FAIL_CALLS = /^(Error|Errorf|Fatal|Fatalf|Fail|FailNow)$/;
+/** Names that make a call count as an assertion on the strength of the name alone. */
+const HELPER_NAME = /^(assert|check|verify|expect|require|must)[A-Z_]/;
+/**
+ * A helper is credited as a strong assertion because of its name or because it receives `t`. Neither is evidence
+ * that it can fail, so `func checkValue(t *testing.T, got int) {}` would otherwise stand in for a real check and
+ * take the whole test-integrity family down with it. A helper whose body cannot fail is not an assertion.
+ */
+function canFail(body) {
+    let fails = false;
+    walk(body, (n) => {
+        if (fails)
+            return false;
+        if (n.type === 'call_expression') {
+            const f = n.childForFieldName('function');
+            const field = f?.type === 'selector_expression' ? f.childForFieldName('field')?.text ?? '' : '';
+            const name = f?.type === 'identifier' ? f.text : '';
+            // t.Fatal and friends, testify, a panic, or delegation to another helper that is itself named like one.
+            if (FAIL_CALLS.test(field) || TESTIFY_STRONG.has(field) || TESTIFY_WEAK.has(field) || name === 'panic' || HELPER_NAME.test(name) || HELPER_NAME.test(field)) {
+                fails = true;
+                return false;
+            }
+        }
+        return undefined;
+    });
+    return fails;
+}
 const SKIP_CALLS = /^(Skip|Skipf|SkipNow)$/;
 function head(t) { return t.split('\n')[0].slice(0, 120); }
 export function normalizeBody(t) {
@@ -41,6 +67,21 @@ export async function extractGo(filePath, source) {
                 constants.set(nm, normalizeBody(v.text));
         }
         const expandData = (t) => { const k = t.trim(); return constants.has(k) ? `${k}\n${constants.get(k)}` : t; };
+        // Helpers in this file that are credited as assertions but cannot fail. Calls to them are not counted.
+        const noopHelpers = new Set();
+        for (const fn of descendants(root, 'function_declaration')) {
+            const nm = fn.childForFieldName('name')?.text ?? '';
+            const b = fn.childForFieldName('body');
+            if (!b || /^(Test|Example|Fuzz|Benchmark)[A-Z_]/.test(nm))
+                continue;
+            const takesT = /\*testing\.[TBF]\b/.test(fn.childForFieldName('parameters')?.text ?? '');
+            if (!takesT && !HELPER_NAME.test(nm))
+                continue;
+            if (!canFail(b)) {
+                noopHelpers.add(nm);
+                model.shadowed.push({ line: line(fn), name: nm });
+            }
+        }
         for (const fn of descendants(root, 'function_declaration')) {
             const name = fn.childForFieldName('name')?.text ?? '';
             const body = fn.childForFieldName('body');
@@ -50,7 +91,7 @@ export async function extractGo(filePath, source) {
                 continue;
             const params = fn.childForFieldName('parameters')?.text ?? '';
             const tVar = (/\(\s*(\w+)\s+\*testing\.(T|F)\b/.exec(params)?.[1]) ?? 't';
-            const tc = mkTest(name, fn, body, tVar, constants, expandData, model);
+            const tc = mkTest(name, fn, body, tVar, constants, expandData, model, noopHelpers);
             model.tests.push(tc);
             const subs = [];
             // subtests: t.Run("name", func(t *testing.T) { ... })
@@ -70,7 +111,7 @@ export async function extractGo(filePath, source) {
                 const nameArg = args[0];
                 const subName = nameArg && /string_literal/.test(nameArg.type) ? unquote(nameArg.text) : `<${normalizeBody(nameArg?.text ?? 'sub').slice(0, 60)}>`;
                 const subT = (/\(\s*(\w+)\s+\*testing\.T\b/.exec(lit.childForFieldName('parameters')?.text ?? '')?.[1]) ?? tVar;
-                const sub = mkTest(`${name} > ${subName}`, n, subBody, subT, constants, expandData, model);
+                const sub = mkTest(`${name} > ${subName}`, n, subBody, subT, constants, expandData, model, noopHelpers);
                 // a subtest inside a table loop is data-driven
                 const loop = ancestor(n, ['for_statement'], body);
                 if (loop) {
@@ -88,7 +129,7 @@ export async function extractGo(filePath, source) {
         return model;
     });
 }
-function mkTest(name, node, body, tVar, constants, expandData, model) {
+function mkTest(name, node, body, tVar, constants, expandData, model, noopHelpers = new Set()) {
     const tc = {
         name, line: line(node), assertions: [], skip: null, only: null, mocks: [], swallowed: [], retry: null, tolerances: [], timeout: null,
         body: normalizeBody(body.text), earlyExits: 0, parametrized: false, vacuous: false, data: '',
@@ -155,7 +196,9 @@ function mkTest(name, node, body, tVar, constants, expandData, model) {
         const nm = f?.type === 'identifier' ? f.text : f?.type === 'selector_expression' ? f.childForFieldName('field')?.text ?? '' : '';
         const recv = f?.type === 'selector_expression' ? f.childForFieldName('operand')?.text ?? '' : '';
         const takesT = args.some((a) => a.type === 'identifier' && a.text === tVar) && recv !== tVar && !/^(Run|Parallel|Log|Logf|Helper|Cleanup|Setenv|TempDir|Name|Deadline)$/.test(nm);
-        if ((takesT || /^(assert|check|verify|expect|require|must)[A-Z_]/.test(nm)) && !tc.assertions.some((a) => a.line === line(n))) {
+        if (noopHelpers.has(nm))
+            return;
+        if ((takesT || HELPER_NAME.test(nm)) && !tc.assertions.some((a) => a.line === line(n))) {
             const subj = args.find((a) => !(a.type === 'identifier' && a.text === tVar))?.text.replace(/\s+/g, '') ?? '';
             tc.assertions.push({ line: line(n), strength: 'strong', text: head(n.text), subject: subj, reachable: reachable(n, body) });
         }

@@ -1,0 +1,6 @@
+{
+  "findings": [
+    { "rule": "assertion-helper-noop", "file": "calc/calc_test.go" },
+    { "rule": "assertions-removed", "file": "calc/calc_test.go", "test": "TestAdd" }
+  ]
+}

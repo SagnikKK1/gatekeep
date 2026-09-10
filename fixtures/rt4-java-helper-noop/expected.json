@@ -1,0 +1,6 @@
+{
+  "findings": [
+    { "rule": "assertion-helper-noop", "file": "src/test/java/CalcTest.java" },
+    { "rule": "assertions-removed", "file": "src/test/java/CalcTest.java", "test": "CalcTest.testAdd" }
+  ]
+}

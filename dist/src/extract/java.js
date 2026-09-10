@@ -8,6 +8,7 @@ const JUNIT_STRONG = new Set(['assertEquals', 'assertNotEquals', 'assertArrayEqu
 const JUNIT_WEAK = new Set(['assertTrue', 'assertFalse', 'assertNull', 'assertNotNull', 'assertDoesNotThrow', 'fail']); // assertNull is promoted below
 const ASSERTJ_STRONG = new Set(['isNull', 'isEqualTo', 'isNotEqualTo', 'hasSize', 'contains', 'containsExactly', 'containsExactlyInAnyOrder', 'containsOnly', 'doesNotContain', 'startsWith', 'endsWith', 'matches', 'isEqualToIgnoringCase', 'hasMessage', 'hasMessageContaining', 'isInstanceOf', 'hasSameSizeAs', 'isCloseTo', 'isBetween', 'containsEntry', 'containsKey', 'hasFieldOrPropertyWithValue', 'isEqualByComparingTo', 'isSameAs', 'isGreaterThan', 'isLessThan', 'isGreaterThanOrEqualTo', 'isLessThanOrEqualTo', 'hasToString', 'isExactlyInstanceOf', 'containsSequence', 'containsSubsequence', 'hasSize', 'isEqualToComparingFieldByField', 'usingRecursiveComparison', 'isThrownBy', 'isInstanceOfSatisfying', 'hasCauseInstanceOf', 'hasRootCauseInstanceOf', 'containsExactlyElementsOf', 'hasOnlyElementsOfType', 'extracting']);
 const ASSERTJ_WEAK = new Set(['isNotNull', 'isTrue', 'isFalse', 'isNotEmpty', 'isEmpty', 'isPresent', 'isNotPresent', 'isZero', 'isNotZero', 'isPositive', 'isNegative', 'isNotBlank', 'isBlank', 'exists', 'doesNotExist', 'isNotNegative', 'isNotPositive', 'hasNoCause', 'anySatisfy', 'allSatisfy', 'noneSatisfy', 'isNotInstanceOf', 'isDirectory', 'isFile']);
+const HELPER_NAME = /^(assert|check|verify|expect|ensure|validate)[A-Z_]/;
 const HAMCREST_STRONG = /^(is|equalTo|hasSize|contains|containsString|startsWith|endsWith|hasItem|hasItems|hasEntry|hasKey|instanceOf|sameInstance|closeTo|greaterThan|lessThan|arrayContaining|hasProperty|comparesEqualTo)$/;
 export async function extractJava(filePath, source) {
     return withTree(source, 'java', (tree) => {
@@ -35,14 +36,23 @@ export async function extractJava(filePath, source) {
             }
             // local helpers whose bodies assert (or throw): calls to them count as assertions
             const helpers = new Set();
+            const noopHelpers = new Set();
             for (const m of named(body).filter((c) => c.type === 'method_declaration')) {
                 const mods = named(m).find((c) => c.type === 'modifiers')?.text ?? '';
                 if (/@(\w+\.)*(Test|ParameterizedTest|RepeatedTest|BeforeEach|AfterEach|BeforeAll|AfterAll|Before|After)\b/.test(mods))
                     continue;
                 const mb = m.childForFieldName('body');
                 const nm = m.childForFieldName('name')?.text;
-                if (mb && nm && (assertionsIn(mb, new Set()).length > 0 || descendants(mb, 'throw_statement').length > 0))
+                if (!mb || !nm)
+                    continue;
+                if (assertionsIn(mb, new Set()).length > 0 || descendants(mb, 'throw_statement').length > 0)
                     helpers.add(nm);
+                // Named like an assertion but unable to fail. Without this it is still credited below on the strength of its
+                // name alone, so `void checkValue(int got, int want) {}` stands in for a real check.
+                else if (HELPER_NAME.test(nm)) {
+                    noopHelpers.add(nm);
+                    model.shadowed.push({ line: line(m), name: nm });
+                }
             }
             for (const m of named(body).filter((c) => c.type === 'method_declaration')) {
                 const mods = named(m).find((c) => c.type === 'modifiers') ?? null;
@@ -84,7 +94,7 @@ export async function extractJava(filePath, source) {
                         tc.assertions.push({ line: line(a), strength: 'strong', text: head(t), subject: 'exception', reachable: true });
                 }
                 void modText;
-                tc.assertions = assertionsIn(mb, helpers);
+                tc.assertions = assertionsIn(mb, helpers, noopHelpers);
                 tc.mocks = mocksIn(mb);
                 tc.tolerances = tolerancesIn(mb);
                 tc.swallowed = swallowedIn(mb);
@@ -171,7 +181,7 @@ function chainMethods(n) {
     }
     return { root, names, rootArgs };
 }
-function assertionsIn(body, helpers = new Set()) {
+function assertionsIn(body, helpers = new Set(), noopHelpers = new Set()) {
     const out = [];
     const seen = new Set();
     walk(body, (n) => {
@@ -236,7 +246,9 @@ function assertionsIn(body, helpers = new Set()) {
             push('strong', argT[0] ?? '');
             return false;
         }
-        if (/^(assert|check|verify|expect|ensure|validate)[A-Z_]/.test(nm) && !/^verify$/.test(nm) && (objText === '' || /^[A-Z]\w*$/.test(objText) || /Assert|Truth|Expect|Check/.test(objText))) {
+        if (noopHelpers.has(nm))
+            return false;
+        if (HELPER_NAME.test(nm) && !/^verify$/.test(nm) && (objText === '' || /^[A-Z]\w*$/.test(objText) || /Assert|Truth|Expect|Check/.test(objText))) {
             push('strong', argT[0] ?? '');
             return false;
         }

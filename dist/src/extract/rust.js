@@ -1,5 +1,6 @@
 import { withTree, walk, descendants, ancestor, countErrors, line, named } from '../parser.js';
 /** Rust: #[test] functions (inline `mod tests` and tests/*.rs), assert!/assert_eq!/assert_ne!, #[ignore], #[should_panic], rstest/test_case. */
+const HELPER_NAME = /^(assert|check|verify|expect|ensure|validate)_/;
 function head(t) { return t.split('\n')[0].slice(0, 120); }
 export function normalizeBody(t) {
     return t.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
@@ -18,6 +19,45 @@ export async function extractRust(filePath, source) {
                 constants.set(nm, normalizeBody(v.text));
         }
         const expandData = (t) => { const k = t.trim(); return constants.has(k) ? `${k}\n${constants.get(k)}` : t; };
+        /**
+         * A call is credited as a strong assertion purely because its name starts with assert_/check_/verify_. The name
+         * is not evidence that it can fail, so `fn check_value(_a: i32, _b: i32) {}` would otherwise stand in for a real
+         * assertion. A helper in this file whose body cannot panic is not an assertion.
+         */
+        const noopHelpers = new Set();
+        for (const fn of descendants(root, 'function_item')) {
+            const nm = fn.childForFieldName('name')?.text ?? '';
+            const b = fn.childForFieldName('body');
+            if (!b || !HELPER_NAME.test(nm))
+                continue;
+            if (precedingAttributes(fn).some((a) => /^#\[\s*(\w+::)*(test|rstest|test_case)\b/.test(a.text)))
+                continue;
+            let fails = false;
+            walk(b, (n) => {
+                if (fails)
+                    return false;
+                if (n.type === 'macro_invocation') {
+                    const mac = n.childForFieldName('macro')?.text ?? '';
+                    if (/^(assert|assert_eq|assert_ne|panic|unreachable|todo|unimplemented|matches)$/.test(mac)) {
+                        fails = true;
+                        return false;
+                    }
+                }
+                if (n.type === 'call_expression') {
+                    const f = n.childForFieldName('function')?.text ?? '';
+                    const last = f.split('::').pop().split('.').pop();
+                    if (/^(unwrap|expect|unwrap_err|expect_err)$/.test(last) || HELPER_NAME.test(last)) {
+                        fails = true;
+                        return false;
+                    }
+                }
+                return undefined;
+            });
+            if (!fails) {
+                noopHelpers.add(nm);
+                model.shadowed.push({ line: line(fn), name: nm });
+            }
+        }
         for (const fn of descendants(root, 'function_item')) {
             const attrs = precedingAttributes(fn);
             const attrTexts = attrs.map((a) => a.text);
@@ -85,7 +125,9 @@ export async function extractRust(filePath, source) {
                 const f = n.childForFieldName('function')?.text ?? '';
                 const nm = f.split('::').pop().split('.').pop();
                 const chain = /\.(assert|assert_eq|assert_data_eq)\(\)?\s*(\.\w+\(.*\))*$/.test(f) || /^(assert|assert_eq|assert_data_eq|success|failure|code|stdout_eq|stderr_eq|stdout_matches|stderr_matches|matches|eq|is_eq)$/.test(nm) && /\.assert\(\)|snapbox|assert_cmd|\.assert_/.test(n.text);
-                if ((chain || /^(assert|check|verify|expect|ensure|validate)_/.test(nm)) && !tc.assertions.some((a) => a.line === line(n)))
+                if (noopHelpers.has(nm))
+                    return;
+                if ((chain || HELPER_NAME.test(nm)) && !tc.assertions.some((a) => a.line === line(n)))
                     tc.assertions.push({ line: line(n), strength: 'strong', text: head(n.text), subject: named(n.childForFieldName('arguments'))[0]?.text.replace(/\s+/g, '') ?? f.split('.')[0].slice(0, 60), reachable: reachable(n, body) });
             });
             const first = tc.assertions[0]?.line ?? Infinity;

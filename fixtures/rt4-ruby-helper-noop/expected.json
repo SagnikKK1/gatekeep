@@ -1,0 +1,6 @@
+{
+  "findings": [
+    { "rule": "assertion-helper-noop", "file": "spec/app_spec.rb" },
+    { "rule": "assertions-removed", "file": "spec/app_spec.rb", "test": "AppTest.test_add" }
+  ]
+}
