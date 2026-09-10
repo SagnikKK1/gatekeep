@@ -119,6 +119,20 @@ test('n bounds the walk, so calibrate on a long history stays a bounded amount o
   } finally { await fs.rm(r.dir, { recursive: true, force: true }); }
 });
 
+test('the test-integrity rules are never offered for a blanket downgrade', async () => {
+  // A real repository (click, 200 commits) had `test-deleted` fire 3 times and `assertion-weakened` twice, and the
+  // first version of this offered to turn both off — the two rules the whole tool exists for, because an ordinary
+  // repository deletes a few tests. Whatever the count, they are not candidates.
+  const { familyOf } = await import('../src/rules.js');
+  for (const rule of ['test-deleted', 'assertion-weakened', 'mock-on-changed-module', 'assertion-removed']) {
+    assert.equal(familyOf(rule), 'test integrity', rule);
+  }
+  assert.equal(familyOf('original-tests-fail'), 'original tests');
+  // Rules that are genuinely about repository convention stay offerable.
+  assert.equal(familyOf('dependency-added'), 'scope');
+  assert.equal(familyOf('lint-config-loosened'), 'check integrity');
+});
+
 test('baseTestFiles reads the tests the oracle rule needs and skips the ones already in the diff', async () => {
   const r = await tmpRepo();
   try {

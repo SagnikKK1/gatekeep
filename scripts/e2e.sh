@@ -549,24 +549,46 @@ echo "== gatekeep calibrate"
 C="$E2E/calib"; mkdir -p "$C/app"; cd "$C"; git init -q -b main
 KEY="AKIA""QZ7TBRWXYVCDMNPK"   # split so this script does not carry a key-shaped literal of its own
 echo 'X = 0' > app/a.py; git add -A; git commit -qm base
-for i in 1 2 3 4 5 6; do
+# Twelve commits, four of them leaking a key: enough hits, and a high enough share, to read as a pattern rather
+# than a coincidence. Two hits in six no longer clears the bar, which is the point of the change.
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   if [ $((i % 3)) -eq 0 ]; then printf 'K%d = "%s"\n' "$i" "$KEY" >> app/a.py; else printf 'def f%d(): return %d\n' "$i" "$i" >> app/a.py; fi
   git add -A; git commit -qm "change $i"
 done
 node "$CLI" calibrate > /tmp/gk_out 2>&1; code=$?
-check "calibrate: exit 0 and reports how many commits would have been interrupted" '[ $code -eq 0 ] && grep -qE "2 of 6 would have been interrupted" /tmp/gk_out'
+check "calibrate: exit 0 and reports how many commits would have been interrupted" '[ $code -eq 0 ] && grep -qE "4 of 12 would have been interrupted" /tmp/gk_out'
 check "calibrate: lists the offending commits with the rule that did it" 'grep -q "secret-introduced" /tmp/gk_out && grep -qc "change 3" /tmp/gk_out'
 check "calibrate: says what a replay cannot cover instead of implying it covers everything" 'grep -q "Not replayed" /tmp/gk_out'
-check "calibrate: offers the downgrade" 'grep -q "gatekeep calibrate --apply" /tmp/gk_out'
+check "calibrate: offers the downgrade for a rule that is genuinely noisy" 'grep -q "gatekeep calibrate --apply" /tmp/gk_out'
+check "calibrate: reports each rule as a share of the commits it applies to" 'grep -qE "secret-introduced +[0-9]+ +[0-9.]+% of" /tmp/gk_out'
 node "$CLI" calibrate --json > /tmp/gk_out.json 2>/tmp/gk_err
-check "calibrate: --json carries the totals, the blocked commits and the downgrade candidates" 'node -e "const j=require(\"/tmp/gk_out.json\");process.exit(j.commits===6&&j.commitsWithBlocks===2&&j.blocked.length===2&&j.downgradable[0]===\"secret-introduced\"?0:1)"'
+check "calibrate: --json carries the totals, the blocked commits and the downgrade candidates" 'node -e "const j=require(\"/tmp/gk_out.json\");process.exit(j.commits===12&&j.commitsWithBlocks===4&&j.blocked.length===4&&j.downgradable[0]===\"secret-introduced\"?0:1)"'
 node "$CLI" calibrate 3 --json > /tmp/gk_out.json 2>/dev/null
 check "calibrate: a positional count bounds the walk" 'node -e "const j=require(\"/tmp/gk_out.json\");process.exit(j.commits+j.skipped===3?0:1)"'
 node "$CLI" calibrate --apply > /tmp/gk_out 2>&1; code=$?
 check "calibrate --apply: downgrades the noisy rule in the config" '[ $code -eq 0 ] && grep -q "Downgraded 1 rule" /tmp/gk_out && node -e "process.exit(JSON.parse(require(\"fs\").readFileSync(\"'"$C"'/gatekeep.config.json\",\"utf8\")).rules[\"secret-introduced\"]===\"warn\"?0:1)"'
 node "$CLI" calibrate --json > /tmp/gk_out.json 2>/dev/null
-check "calibrate --apply: the same history is quiet afterwards" 'node -e "const j=require(\"/tmp/gk_out.json\");process.exit(j.commitsWithBlocks===0&&j.commitsWithFindings===2?0:1)"'
+check "calibrate --apply: the same history is quiet afterwards" 'node -e "const j=require(\"/tmp/gk_out.json\");process.exit(j.commitsWithBlocks===0&&j.commitsWithFindings===4?0:1)"'
 check "calibrate --apply: the written config still parses, comment key and all" 'node "$CLI" run --json 2>/dev/null | node -e "let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const v=JSON.parse(d);process.exit(v.checks.testIntegrity.findings.some(f=>f.rule===\"config-invalid\")?1:0)})"'
+# The rules the gate exists for are never offered, however often they fire.
+K2="$E2E/coretests"; mkdir -p "$K2/app" "$K2/tests"; cd "$K2"; git init -q -b main
+printf 'def add(a, b):\n    return a + b\n' > app/calc.py
+printf 'from app.calc import add\n\ndef test_one():\n    assert add(1, 1) == 2\n' > tests/test_a.py
+git add -A; git commit -qm base
+for i in 1 2 3 4 5 6; do
+  printf 'from app.calc import add\n\ndef test_one():\n    assert add(1, 1) == 2\n\ndef test_%d():\n    assert add(%d, 1) == %d\n' "$i" "$i" "$((i+1))" > tests/test_a.py
+  git add -A; git commit -qm "add test $i"
+  printf 'from app.calc import add\n\ndef test_one():\n    assert add(1, 1) == 2\n' > tests/test_a.py
+  git add -A; git commit -qm "drop test $i"
+done
+node "$CLI" calibrate > /tmp/gk_out 2>&1
+check "calibrate: a repeatedly-firing core rule is still reported" 'grep -q "test-deleted" /tmp/gk_out'
+check "calibrate: but never offered for downgrade" 'grep -q "Never offered for downgrade" /tmp/gk_out'
+check "calibrate: and points at the per-change override instead" 'grep -q "gatekeep: allow test-deleted" /tmp/gk_out'
+node "$CLI" calibrate --json > /tmp/gk_out.json 2>/dev/null
+check "calibrate: --json agrees that a core rule is not a candidate" 'node -e "const j=require(\"/tmp/gk_out.json\");process.exit(j.downgradable.includes(\"test-deleted\")?1:0)"'
+node "$CLI" calibrate --apply > /tmp/gk_out 2>&1
+check "calibrate --apply: refuses to turn a core rule off" 'grep -q "Nothing to apply" /tmp/gk_out && ! grep -q "Downgraded" /tmp/gk_out'
 D="$E2E/nogit"; mkdir -p "$D"; cd "$D"
 node "$CLI" calibrate > /tmp/gk_out 2>&1; code=$?
 check "calibrate: outside a git repository it fails with a reason, not a stack" '[ $code -eq 3 ] && grep -q "not inside a git repository" /tmp/gk_out && ! grep -q "at Object" /tmp/gk_out'
@@ -610,6 +632,30 @@ check "report-fp: an unknown rule lists what the verdict actually has" '[ $code 
 D2="$E2E/fp-empty"; mkdir -p "$D2"; cd "$D2"; git init -q -b main; echo x > a.txt; git add -A; git commit -qm base
 node "$CLI" report-fp --no-open > /tmp/gk_out 2>&1; code=$?
 check "report-fp: no verdict yet says so instead of failing obscurely" '[ $code -eq 3 ] && grep -q "no verdict found" /tmp/gk_out'
+
+echo "== a test command that is not installed"
+# A detected command whose binary is absent must read as a configuration problem, not as a failing suite.
+N="$E2E/nocmd"; mkdir -p "$N/app" "$N/tests"; cd "$N"; git init -q -b main
+printf 'def add(a, b):\n    return a + b\n' > app/calc.py
+printf 'from app.calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n' > tests/test_calc.py
+echo '{"testCommand": "definitely-not-installed-xyz -q", "shadow": null}' > gatekeep.config.json
+git add -A && git commit -qm base
+printf 'def add(a, b):\n    return a + b\n\ndef sub(a, b):\n    return a - b\n' > app/calc.py
+node "$CLI" run --no-judge > /tmp/gk_out 2>&1; code=$?
+check "missing test command: does not report it as failing tests" '! grep -q "tests-failing" /tmp/gk_out'
+check "missing test command: says the command could not be run, and points at testCommand" 'grep -q "test-run-error" /tmp/gk_out && grep -q "exit 127: command not found" /tmp/gk_out && grep -q "testCommand" /tmp/gk_out'
+check "missing test command: does not block, because nothing was tested" '[ $code -eq 0 ]'
+check "missing test command: the summary line is readable, not an internal token" 'grep -q "error (exit 127) — command not found" /tmp/gk_out && ! grep -q "not-runnable:" /tmp/gk_out'
+# install says so at the moment it writes the config
+P="$E2E/pytestproj"; mkdir -p "$P/tests"; cd "$P"; git init -q -b main
+printf '[pytest]\n' > pytest.ini; printf 'def test_a():\n    assert 1 == 1\n' > tests/test_a.py
+git add -A && git commit -qm base
+node "$CLI" install --no-calibrate > /tmp/gk_out 2>&1
+if command -v pytest >/dev/null 2>&1; then
+  check "install: a detected command that exists here is not flagged" '! grep -q "is not on this PATH" /tmp/gk_out'
+else
+  check "install: warns when the detected command is not on PATH" 'grep -q "pytest\` is not on this PATH" /tmp/gk_out && grep -q "testCommand" /tmp/gk_out'
+fi
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

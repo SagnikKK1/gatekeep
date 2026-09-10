@@ -9,7 +9,7 @@ import { parseConfig, readConfigText, defaultConfigText, CONFIG_FILENAME } from 
 import { git, repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees, catFile, isShallow, GitError } from './git.js';
 import { loadSession, loadSessionChecked, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, appendToolEvent, readToolEvents } from './session.js';
 import { decide, writeVerdict, formatReport } from './verdict.js';
-import { installClaudeCode, uninstallClaudeCode, installCodex, installedHooks, detectTestCommand, claudeSettingsFile, hookCommandPrefix } from './install.js';
+import { installClaudeCode, uninstallClaudeCode, installCodex, installedHooks, detectTestCommand, commandIsRunnable, claudeSettingsFile, hookCommandPrefix } from './install.js';
 import { discoverTestTree, applyProtect, removeProtect, readProtectRecord, decideProtect, protectedIn } from './protect.js';
 import { runOriginalTests, testRunFindings } from './testrun.js';
 import { readTranscript, claimFindings, transcriptFromTools } from './claims.js';
@@ -94,7 +94,8 @@ Usage:
   gatekeep calibrate [<commits>] [--commits <n>] [--threshold <n>] [--apply] [--json]
       Replay this repository's own history through the gate and print how many commits it would have
       interrupted, which ones, and which rules did it. Default: the last ${DEFAULT_CALIBRATE_COMMITS} commits.
-      --apply downgrades to "warn" every rule that interrupted --threshold or more commits (default 2).
+      --apply downgrades to "warn" every rule that interrupted --threshold percent or more of the commits it
+      applies to (default ${DEFAULT_CALIBRATE_THRESHOLD}%). The test-integrity rules are never offered: use the per-change override instead.
   gatekeep shadow [--off | --on | --extend] [--days <n>] [--sessions <n>]
       Shadow mode reports what would have blocked instead of blocking. New installs start in it for
       ${DEFAULT_SHADOW_DAYS} days or ${DEFAULT_SHADOW_SESSIONS} sessions. --off turns blocking on. With no flag, shows the tally so far.
@@ -561,6 +562,14 @@ async function cmdInstall(args, cwd) {
             if (detected) {
                 console.log(`  testCommand: ${detected.command}  (detected from ${detected.from})`);
                 console.log('  At Stop, the tests as they stood at session start are restored and run against the final code.');
+                // Detection reads config files, not the machine. Saying so here is cheaper than the gate reporting a suite
+                // that never ran as a suite that failed.
+                if (!(await commandIsRunnable(detected.command))) {
+                    const bin = detected.command.trim().split(/\s+/)[0];
+                    console.log(`  WARNING: \`${bin}\` is not on this PATH, so that command cannot run here yet. The check will report a`);
+                    console.log('  configuration problem rather than a result until it can. Install it, point "testCommand" at something');
+                    console.log('  that works here, or set it to null to turn the check off.');
+                }
                 console.log('  Wrong command, or too slow to run every stop? Set "testCommand" to null.');
             }
             else {
@@ -601,7 +610,7 @@ async function calibrateAtInstall(root, wroteConfig, off) {
     console.log('');
     const { cfg } = await configFor(root, null, null);
     const c = await runCalibration(root, cfg, DEFAULT_CALIBRATE_COMMITS, process.stderr.isTTY === true);
-    printCalibration(c, cfg, 2);
+    printCalibration(c, cfg, DEFAULT_CALIBRATE_THRESHOLD);
 }
 function settingsFiles(root) {
     return ['project-local', 'project-shared', 'global'].map((k) => claudeSettingsFile(k, root));
@@ -665,10 +674,54 @@ async function cmdProtectTests(args, cwd) {
  */
 const CALIBRATE_LIST_MAX = 20;
 const DEFAULT_CALIBRATE_COMMITS = 200;
-/** Rules that only warn cannot interrupt anything, so they are not candidates however often they fire. */
+/** Percent of the commits a rule could have applied to. Below this it is ordinary, not noisy. */
+const DEFAULT_CALIBRATE_THRESHOLD = 5;
+/** However high the rate, this few hits is a coincidence rather than a pattern, especially on a short history. */
+const MIN_NOISY_COMMITS = 3;
+/**
+ * Families the gate exists to enforce. Never offered for a blanket downgrade, however often they fire.
+ *
+ * `calibrate --apply` used to offer whatever fired twice, which on a real repository meant offering to turn off
+ * `test-deleted` and `assertion-weakened` — the two rules the whole tool is for — because they caught three and two
+ * honest deletions in two hundred commits. A calibration step that talks people out of the gate on its first run is
+ * worse than no calibration step. Three deletions in two hundred commits is a normal repository, and the answer to
+ * a legitimate deletion is the per-change override, which keeps the rule and records the reason.
+ */
+const CORE_FAMILIES = new Set(['test integrity', 'original tests', 'gate']);
+const isCore = (rule) => CORE_FAMILIES.has(familyOf(rule));
+/**
+ * The commits a rule could plausibly have fired on. A test-integrity rule cannot fire on a commit that touches no
+ * test, so counting it against every commit makes every such rule look quiet; the rules that read source or
+ * manifests are measured against the whole history.
+ */
+function population(rule, totals) {
+    const f = familyOf(rule);
+    if (f === 'test integrity' || f === 'original tests')
+        return totals.commitsTouchingTests || totals.commits;
+    return totals.commits;
+}
+function rateOf(rule, totals) {
+    const pop = population(rule, totals);
+    return pop === 0 ? 0 : 100 * (totals.blockingCommitsByRule[rule] ?? 0) / pop;
+}
+/**
+ * Rules worth offering to downgrade: not core, still blocking, and firing on a large enough *share* of the commits
+ * they apply to that it reads as a pattern. A share rather than a count, because "2 commits" means something
+ * different in a history of 40 and a history of 2,000.
+ */
 function downgradable(totals, cfg, threshold) {
     return Object.entries(totals.blockingCommitsByRule)
-        .filter(([rule, n]) => n >= threshold && (cfg.rules.severities[rule] ?? 'block') === 'block')
+        .filter(([rule, n]) => !isCore(rule)
+        && (cfg.rules.severities[rule] ?? 'block') === 'block'
+        && n >= MIN_NOISY_COMMITS
+        && rateOf(rule, totals) >= threshold)
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([rule]) => rule);
+}
+/** Core rules that fired often enough to be worth mentioning — with the override, not a downgrade. */
+function coreOffenders(totals) {
+    return Object.entries(totals.blockingCommitsByRule)
+        .filter(([rule]) => isCore(rule))
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
         .map(([rule]) => rule);
 }
@@ -734,22 +787,41 @@ function printCalibration(c, cfg, threshold, applying = false) {
             console.log(`  … and ${blocked.length - CALIBRATE_LIST_MAX} more (--json lists all of them)`);
         console.log('');
         const ranked = Object.entries(totals.blockingCommitsByRule).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-        console.log('Interruptions by rule, counted in commits rather than findings:');
-        for (const [rule, n] of ranked)
-            console.log(`  ${rule.padEnd(30)} ${String(n).padStart(3)}`);
+        console.log(`Interruptions by rule, counted in commits rather than findings (${totals.commitsTouchingTests} of the`);
+        console.log(`${totals.commits} replayed commits touch a test file, which is what the test rules are measured against):`);
+        for (const [rule, n] of ranked) {
+            const core = isCore(rule) ? '  core' : '';
+            console.log(`  ${rule.padEnd(30)} ${String(n).padStart(3)}  ${rateOf(rule, totals).toFixed(1).padStart(5)}% of ${population(rule, totals)}${core}`);
+        }
         console.log('');
         const cands = downgradable(totals, cfg, threshold);
+        const core = coreOffenders(totals);
         if (cands.length && !applying) {
-            console.log(`${cands.length} rule(s) interrupted ${threshold} or more commits. Downgrading them to "warn" keeps the finding in the`);
-            console.log('report and stops it ending a session:');
+            console.log(`${cands.length} rule(s) interrupted ${threshold}% or more of the commits they apply to. Downgrading them to "warn" keeps`);
+            console.log('the finding in the report and stops it ending a session:');
             console.log('');
-            console.log(`  gatekeep calibrate --apply${threshold === 2 ? '' : ` --threshold ${threshold}`}`);
+            console.log(`  gatekeep calibrate --apply${threshold === DEFAULT_CALIBRATE_THRESHOLD ? '' : ` --threshold ${threshold}`}`);
             console.log('');
             console.log('That reads the commits above as honest work. If an agent has already faked something in them, the rule that');
             console.log('caught it is the one this turns off, so read the list before applying.');
         }
-        else if (!cands.length) {
-            console.log(`No rule interrupted ${threshold} or more commits, so there is nothing worth downgrading wholesale.`);
+        else if (!cands.length && !applying) {
+            const other = core.length ? 'No other rule' : 'No rule';
+            console.log(`${other} interrupted ${threshold}% or more of the commits it applies to, so there is nothing worth`);
+            console.log('downgrading wholesale.');
+        }
+        // The rules marked core are never in that offer. Say so, and say what to do instead, or the reader assumes the
+        // tool simply missed the two rules at the top of its own list.
+        if (core.length) {
+            console.log('');
+            console.log('Never offered for downgrade, however often they fire:');
+            for (const r of core)
+                console.log(`  ${r}`);
+            console.log(`${core.length === 1 ? 'That rule is' : 'Those are'} what the gate is for. Removing a test is sometimes the right thing to do, and the`);
+            console.log('answer to that is to lift the rule for the one change and keep it everywhere else — in your prompt, or');
+            console.log('as a commit trailer:');
+            console.log('');
+            console.log(`  gatekeep: allow ${core[0]} -- <why this one is deliberate>`);
         }
     }
     else if (totals.commits) {
@@ -767,7 +839,7 @@ async function cmdCalibrate(args, cwd) {
     if (!root)
         throw new UserError('not inside a git repository; calibrate replays this repository\'s own commits');
     const n = Math.max(1, parseInt(String(args.flags.commits ?? args._[1] ?? DEFAULT_CALIBRATE_COMMITS), 10) || DEFAULT_CALIBRATE_COMMITS);
-    const threshold = Math.max(1, parseInt(String(args.flags.threshold ?? 2), 10) || 2);
+    const threshold = Math.max(0, Number(args.flags.threshold ?? DEFAULT_CALIBRATE_THRESHOLD)) || DEFAULT_CALIBRATE_THRESHOLD;
     const { cfg } = await configFor(root, null, null);
     const json = args.flags.json === true;
     const c = await runCalibration(root, cfg, n, !json && process.stderr.isTTY === true);

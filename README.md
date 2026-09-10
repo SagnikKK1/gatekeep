@@ -108,7 +108,7 @@ and tells you what they would have done to work you already shipped.
 ```bash
 gatekeep calibrate                 # the last 200 commits
 gatekeep calibrate 500 --json      # further back, machine-readable
-gatekeep calibrate --apply         # downgrade to "warn" every rule that interrupted 2+ of those commits
+gatekeep calibrate --apply         # downgrade the rules that are noisy on your history (see below)
 ```
 
 ```
@@ -130,6 +130,16 @@ Our own measured blocking rate on public repositories is a fact about other peop
 shows exactly what was traded away and a later reader can put it back. It reads your history as honest work, which is
 the assumption to check: a rule that fires a lot is either noisy or is the one rule that caught something. That is why
 the commits are listed rather than summarised, and why nothing is downgraded until you have seen them.
+
+**The test-integrity rules are never offered.** `test-deleted` and `assertion-weakened` are what the gate is for, and
+a repository that deletes a few tests over two hundred commits is an ordinary repository, not a noisy rule — a
+calibration step that talks you out of the gate on its first run would be worse than no calibration step. When a
+removal is deliberate, [lift it for that one change](#when-it-blocks-you) and keep the rule.
+
+What is offered is measured as a **share** of the commits a rule could apply to, not as a raw count: `--threshold`
+is a percentage (default 5), and a rule needs at least three hits before a share means anything. Test rules are
+counted against the commits that touch tests, everything else against the whole history — the report shows both
+numbers per rule.
 
 A replay covers the rules that read the diff. It cannot cover the original-tests lane (that one runs your suite), the
 claims family (no live session, so nothing was claimed) or the model-backed judge — and it says so every time rather
@@ -243,7 +253,7 @@ advisory and off unless you turn it on. Turn it on for work where that matters.
 | `gatekeep install` | Wire the hooks, write the config, calibrate. `--shared`, `--global`, `--codex`, `--no-calibrate` |
 | `gatekeep status` | Where hooks are wired, whether blocking is on, recent sessions, the last verdict |
 | `gatekeep shadow` | The no-blocking window and its tally. `--off` turns blocking on; `--on`, `--extend`, `--days`, `--sessions` |
-| `gatekeep calibrate` | Replay your own history and report what would have been interrupted. `--apply` downgrades noisy rules |
+| `gatekeep calibrate` | Replay your own history and report what would have been interrupted. `--apply` downgrades rules that are noisy on it; the test-integrity rules are never offered |
 | `gatekeep run` | Check the working tree against a baseline. Exit `0` pass, `1` blocked, `3` error. `--base`, `--json`, `--fail-on-warn`, `--allow` |
 | `gatekeep report` | Render a verdict as one self-contained HTML file. `--open`, `--out`, `--stdout`, `--session` |
 | `gatekeep report-fp` | Turn a wrong finding into a redacted fixture and a prefilled issue |
