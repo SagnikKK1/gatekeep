@@ -1,0 +1,5 @@
+{
+  "findings": [
+    { "rule": "test-file-unparseable", "file": "tests/test_calc.py", "severity": "block" }
+  ]
+}

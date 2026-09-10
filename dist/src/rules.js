@@ -269,8 +269,18 @@ export async function analyze(changes, cfg = DEFAULT_RULE_CONFIG, opts = {}) {
                     emit({ rule: 'test-deleted', file: path, line: t.line, test: t.name, message: `Test "${t.name}" removed with its file (had ${t.assertions.length} assertion(s)); the other tests moved elsewhere`, before: summarize(t) || t.name });
             continue;
         }
-        if (after.parseErrors > 0)
-            emit({ rule: 'test-file-unparseable', file: path, message: `${after.parseErrors} syntax error(s) in test file after change; some rules could not run` });
+        if (after.parseErrors > 0) {
+            // A file that parsed cleanly and now does not had its syntax broken during the session, and the break stands
+            // down every count-based rule below (`countsReliable`). That is a way to disable the gate, not a grammar gap,
+            // so it blocks. Errors that were already there are a limitation of our grammar build and stay at warn.
+            const introduced = (before?.parseErrors ?? 0) === 0;
+            emit({
+                rule: 'test-file-unparseable', file: path,
+                message: introduced
+                    ? `${after.parseErrors} syntax error(s) introduced in this test file; it parsed cleanly at session start, and the count-based rules cannot run on a file that does not parse`
+                    : `${after.parseErrors} syntax error(s) in test file after change; some rules could not run`,
+            }, introduced && sev('test-file-unparseable') !== 'off' ? 'block' : undefined);
+        }
         if (after.fileSkip && !before?.fileSkip)
             emit({ rule: 'file-skipped', file: path, line: after.fileSkip.line, message: `Whole test module marked skip/xfail: ${after.fileSkip.marker}` });
         if (after.fileRetry && !before?.fileRetry)
