@@ -506,6 +506,43 @@ check "report: a non-verdict file is refused with exit 3" '[ $code -eq 3 ] && gr
 cd "$R"; sid=$(node "$CLI" session start --task "t" 2>/dev/null); node "$CLI" verify --session "$sid" >/dev/null 2>&1; rp=$(node "$CLI" report --session "$sid" 2>/dev/null); code=$?
 check "report: --session picks that session's latest verdict" '[ $code -eq 0 ] && grep -q "session <code>$sid</code>" "$rp"'
 
+echo "== shadow mode"
+# A brand-new install reports instead of blocking. The two things that must not slip: the report still reaches the
+# human, and the gate's own integrity is still enforced inside the window.
+S="$E2E/shadow"; mkdir -p "$S/app" "$S/tests"; cd "$S"; git init -q -b main
+printf 'def add(a, b):\n    return a + b\n' > app/calc.py
+printf 'from app.calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n\ndef test_two():\n    assert add(1, 1) == 2\n' > tests/test_calc.py
+git add -A && git commit -qm base
+node "$CLI" install --no-calibrate >/dev/null 2>&1
+check "install: a new config starts in shadow mode" 'node -e "const c=require(\"'"$S"'/gatekeep.config.json\");process.exit(c.shadow&&c.shadow.days===7&&c.shadow.sessions===10?0:1)"'
+check "status: says blocking is off and why" 'node "$CLI" status 2>/dev/null | grep -q "Blocking: off — shadow mode"'
+hook session-start '{"session_id":"sh1","cwd":"'"$S"'","source":"startup"}' >/dev/null
+printf 'from app.calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n' > tests/test_calc.py
+out=$(hook stop '{"session_id":"sh1","cwd":"'"$S"'"}' 2>/dev/null); code=$?
+check "shadow: a deleted test does not block the stop" '[ $code -eq 0 ] && ! blocked "$out"'
+check "shadow: the human still gets the finding, labelled as not enforced" 'echo "$out" | grep -q "WOULD HAVE BLOCKED" && echo "$out" | grep -q "test-deleted"'
+check "shadow: the note carries the tally and the offer" 'echo "$out" | grep -q "1 of 1 stop" && echo "$out" | grep -q "shadow --off"'
+check "shadow: the verdict records that it was shadowed, so a report cannot claim it blocked" 'node -e "const fs=require(\"fs\"),g=require(\"path\").join;const d=process.env.GATEKEEP_HOME+\"/repos\";const r=fs.readdirSync(d).filter(x=>x.startsWith(\"shadow-\"))[0];const vd=g(d,r,\"verdicts\");const f=fs.readdirSync(vd).filter(x=>x.endsWith(\".json\")&&x!==\"latest.json\").sort().pop();const v=JSON.parse(fs.readFileSync(g(vd,f),\"utf8\"));process.exit(v.decision===\"block\"&&v.shadowed===true?0:1)"'
+node "$CLI" shadow > /tmp/gk_out 2>&1
+check "shadow: the command shows the window and the tally" 'grep -q "Shadow mode is on" /tmp/gk_out && grep -q "test-deleted" /tmp/gk_out'
+# The gate's own integrity is not part of the deal.
+hook session-start '{"session_id":"sh2","cwd":"'"$S"'","source":"startup"}' >/dev/null
+echo '{"maxBlocks": 99}' > gatekeep.config.json
+out=$(hook stop '{"session_id":"sh2","cwd":"'"$S"'"}' 2>/dev/null); code=$?
+check "shadow: editing the gate config still blocks inside the window" 'blocked "$out" && echo "$out" | grep -q gate-config-changed'
+check "shadow: and the block says why shadow mode did not cover it" 'echo "$out" | grep -q "does not cover the gate.s own integrity"'
+node "$CLI" shadow --off > /tmp/gk_out 2>&1
+check "shadow --off: turns blocking on and says what the window saw" 'grep -q "Blocking is on" /tmp/gk_out && node -e "process.exit(JSON.parse(require(\"fs\").readFileSync(\"'"$S"'/gatekeep.config.json\",\"utf8\")).shadow===null?0:1)"'
+# Put both tests back first: a baseline that already has the deletion in it has nothing left to find.
+printf 'from app.calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n\ndef test_two():\n    assert add(1, 1) == 2\n' > tests/test_calc.py
+hook session-start '{"session_id":"sh3","cwd":"'"$S"'","source":"startup"}' >/dev/null
+printf 'from app.calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n' > tests/test_calc.py
+out=$(hook stop '{"session_id":"sh3","cwd":"'"$S"'"}' 2>/dev/null); code=$?
+check "shadow --off: the same deletion now blocks" 'blocked "$out"'
+check "status: says blocking is on once the window is closed" 'node "$CLI" status 2>/dev/null | grep -q "Blocking: on"'
+node "$CLI" shadow --on --days 3 --sessions 5 >/dev/null 2>&1
+check "shadow --on: re-arms with the window you asked for" 'node -e "const c=require(\"'"$S"'/gatekeep.config.json\");process.exit(c.shadow&&c.shadow.days===3&&c.shadow.sessions===5?0:1)"'
+
 echo "== gatekeep calibrate"
 # A repository whose own history contains commits the gate would have stopped: calibrate has to find them, name the
 # rule, offer the downgrade, and then actually be quiet once the downgrade is applied.

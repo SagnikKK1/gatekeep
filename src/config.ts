@@ -3,6 +3,7 @@ import path from 'node:path';
 import { DEFAULT_RULE_CONFIG, DEFAULT_SEVERITIES, type RuleConfig } from './rules.js';
 import type { Severity } from './model.js';
 import { DEFAULT_JUDGE_MODEL, JUDGE_EFFORTS, type JudgeConfig } from './judge.js';
+import { defaultShadow, DEFAULT_SHADOW_DAYS, DEFAULT_SHADOW_SESSIONS, type ShadowConfig } from './shadow.js';
 
 export interface GatekeepConfig {
   rules: RuleConfig;
@@ -15,6 +16,8 @@ export interface GatekeepConfig {
   strict: boolean;
   /** Model-backed review of the diff with the task in hand. Null = off (the default). */
   judge: JudgeConfig | null;
+  /** Report what would have blocked instead of blocking, for a window. Null = the gate blocks (see src/shadow.ts). */
+  shadow: ShadowConfig | null;
 }
 
 export const CONFIG_FILENAME = 'gatekeep.config.json';
@@ -24,7 +27,7 @@ export const STOP_HOOK_TIMEOUT_MS = 600_000;
 const MAX_TEST_BUDGET_MS = 540_000;
 
 export function defaultConfig(): GatekeepConfig {
-  return { rules: { ...DEFAULT_RULE_CONFIG, severities: { ...DEFAULT_RULE_CONFIG.severities } }, maxBlocks: 3, strict: false, testCommand: null, testTimeoutMs: 300000, judge: null };
+  return { rules: { ...DEFAULT_RULE_CONFIG, severities: { ...DEFAULT_RULE_CONFIG.severities } }, maxBlocks: 3, strict: false, testCommand: null, testTimeoutMs: 300000, judge: null, shadow: null };
 }
 
 /**
@@ -70,6 +73,24 @@ export function parseConfig(raw: string | null | undefined): { cfg: GatekeepConf
       cfg.judge = jc;
     } else problems.push('"judge" must be an object (or null to disable)');
   }
+  if (j.shadow !== undefined && j.shadow !== null && j.shadow !== false) {
+    if (j.shadow && typeof j.shadow === 'object' && !Array.isArray(j.shadow)) {
+      const sh = j.shadow as Record<string, unknown>;
+      const out: ShadowConfig = { ...defaultShadow(), ...(typeof sh.startedAt === 'string' ? { startedAt: sh.startedAt } : {}) };
+      if (sh.startedAt !== undefined && typeof sh.startedAt !== 'string') problems.push('"shadow.startedAt" must be a date string like "2026-09-10"');
+      for (const k of ['days', 'sessions'] as const) {
+        if (sh[k] === undefined) continue;
+        if (sh[k] === null) out[k] = null;
+        else if (typeof sh[k] === 'number' && (sh[k] as number) > 0) out[k] = Math.floor(sh[k] as number);
+        else problems.push(`"shadow.${k}" must be a positive number or null`);
+      }
+      for (const k of Object.keys(sh)) if (!['startedAt', 'days', 'sessions'].includes(k)) problems.push(`unknown key "shadow.${k}"`);
+      // Both limits off would be a window that never closes, which is indistinguishable from turning the gate off
+      // by accident. Say so rather than let it happen silently.
+      if (out.days === null && out.sessions === null) problems.push('"shadow" has neither a day nor a session limit, so it will never end; the gate will report and never block');
+      cfg.shadow = out;
+    } else problems.push('"shadow" must be an object (or null to turn blocking on)');
+  }
   if (j.rules !== undefined) {
     if (j.rules && typeof j.rules === 'object' && !Array.isArray(j.rules)) {
       for (const [k, v] of Object.entries(j.rules as Record<string, unknown>)) {
@@ -79,7 +100,7 @@ export function parseConfig(raw: string | null | undefined): { cfg: GatekeepConf
       }
     } else problems.push('"rules" must be an object');
   }
-  const known = new Set(['$schema', 'testGlobs', 'extraTestGlobs', 'testConfigGlobs', 'ignore', 'assertionDropTolerance', 'maxBlocks', 'strict', 'rules', 'testCommand', 'testTimeoutMs', 'protectedPaths', 'extraProtectedPaths', 'judge']);
+  const known = new Set(['$schema', 'testGlobs', 'extraTestGlobs', 'testConfigGlobs', 'ignore', 'assertionDropTolerance', 'maxBlocks', 'strict', 'rules', 'testCommand', 'testTimeoutMs', 'protectedPaths', 'extraProtectedPaths', 'judge', 'shadow']);
   // JSON has no comments; a key starting with "//" is one. The generated config uses them to record what install detected.
   for (const k of Object.keys(j)) if (!known.has(k) && !k.startsWith('//')) problems.push(`unknown key "${k}"`);
   return { cfg, problems };
@@ -102,6 +123,8 @@ export function defaultConfigText(detected?: { command: string; from: string } |
   if (detected) cfg['// testCommand'] = `detected from ${detected.from}; the original tests are restored and run against the final code. Set to null to turn this off.`;
   else cfg['// testCommand'] = 'no test command detected. Set it to run the session\'s original tests against the final code.';
   cfg.testCommand = detected ? detected.command : null;
+  cfg['// shadow'] = `for the first ${DEFAULT_SHADOW_DAYS} days or ${DEFAULT_SHADOW_SESSIONS} sessions gatekeep reports what it would have blocked instead of blocking, then asks. Turn blocking on now with \`gatekeep shadow --off\`.`;
+  cfg.shadow = defaultShadow();
   Object.assign(cfg, {
     judge: null,
     extraTestGlobs: [],

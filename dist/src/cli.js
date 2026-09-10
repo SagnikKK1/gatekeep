@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { analyze, needsContent, PROTECTED_FILES } from './rules.js';
+import { analyze, needsContent, familyOf, PROTECTED_FILES } from './rules.js';
 import { parseConfig, readConfigText, defaultConfigText, CONFIG_FILENAME } from './config.js';
 import { git, repoRoot, gitDir, headTree, resolveTree, snapshotWorkingTree, diffTrees, catFile, isShallow, GitError } from './git.js';
 import { loadSession, loadSessionChecked, saveSession, newSession, listSessions, repoStateDir, verdictDir, withSessionLock, appendToolEvent, readToolEvents } from './session.js';
@@ -18,11 +18,12 @@ import { isTestFile } from './rules.js';
 import { runJudge } from './judge.js';
 import { renderReport } from './report.js';
 import { replay, baseTestFiles } from './replay.js';
+import { recordStop, statusOf, shadowNote, readShadowState, defaultShadow, DEFAULT_SHADOW_DAYS, DEFAULT_SHADOW_SESSIONS } from './shadow.js';
 import { spawn } from 'node:child_process';
 const require = createRequire(import.meta.url);
 const VERSION = require('../../package.json').version;
-const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet', 'no-judge', 'stdout', 'open', 'off', 'dry-run', 'apply', 'no-calibrate']);
-const VALUE_FLAGS = ['session', 'base', 'allow', 'harness', 'id', 'task', 'transcript', 'judge', 'out', 'commits', 'threshold'];
+const BOOL_FLAGS = new Set(['json', 'fail-on-warn', 'version', 'claude', 'codex', 'global', 'shared', 'help', 'quiet', 'no-judge', 'stdout', 'open', 'off', 'dry-run', 'apply', 'no-calibrate', 'extend', 'on']);
+const VALUE_FLAGS = ['session', 'base', 'allow', 'harness', 'id', 'task', 'transcript', 'judge', 'out', 'commits', 'threshold', 'days', 'sessions'];
 function parseArgs(argv) {
     const out = { _: [], flags: {} };
     for (let i = 0; i < argv.length; i++) {
@@ -92,6 +93,9 @@ Usage:
       Replay this repository's own history through the gate and print how many commits it would have
       interrupted, which ones, and which rules did it. Default: the last ${DEFAULT_CALIBRATE_COMMITS} commits.
       --apply downgrades to "warn" every rule that interrupted --threshold or more commits (default 2).
+  gatekeep shadow [--off | --on | --extend] [--days <n>] [--sessions <n>]
+      Shadow mode reports what would have blocked instead of blocking. New installs start in it for
+      ${DEFAULT_SHADOW_DAYS} days or ${DEFAULT_SHADOW_SESSIONS} sessions. --off turns blocking on. With no flag, shows the tally so far.
   gatekeep init
       Write a ${CONFIG_FILENAME} with default rule severities and the repository's detected test command.
   gatekeep --version
@@ -309,12 +313,22 @@ async function cmdVerify(args, cwd) {
     const overrides = [...overridesFromCli(typeof args.flags.allow === 'string' ? args.flags.allow : undefined, process.env.USER ?? 'cli'), ...overridesFromPrompts(s.prompts ?? (s.prompt ? [s.prompt] : []))];
     const strict = cfg.strict || args.flags['fail-on-warn'] === true;
     const v = buildVerdict({ sessionId: s.id, harness: s.harness, base: s.baseTree, cur, task: s.prompt, findings, result, originalTests, judge, strict, blockCount: s.blocks, t0, overrides });
+    // `verify` is the same gate as the Stop hook for harnesses without hooks, so shadow mode has to hold here too, or
+    // the window means one thing on Claude Code and nothing on Devin.
+    const decidingRules = [...new Set(findings.filter((f) => !f.overridden && (f.severity === 'block' || strict)).map((f) => f.rule))];
+    const shadowState = cfg.shadow ? await recordStop(root, s.id, v.decision === 'block', decidingRules) : null;
+    const shadowed = cfg.shadow !== null && v.decision === 'block' && !decidingRules.some((r) => familyOf(r) === 'gate');
+    if (shadowed)
+        v.shadowed = true;
     const vp = await writeVerdict(root, v);
     if (args.flags.json)
         console.log(JSON.stringify(v, null, 2));
-    else
+    else {
         console.log(formatReport(v, { forAgent: false, verdictPath: vp }));
-    return v.decision === 'block' ? 1 : 0;
+        if (shadowed)
+            console.log('\n' + shadowNote(cfg.shadow, shadowState, statusOf(cfg.shadow, shadowState)));
+    }
+    return v.decision === 'block' && !shadowed ? 1 : 0;
 }
 /** SessionStart reasons that continue work already under way; anything else is a fresh session and a new baseline. */
 const CONTINUES_SESSION = new Set(['resume', 'compact', 'clear', 'fork']);
@@ -467,19 +481,43 @@ async function stopHook(root, sessionId, harness, input, gd) {
         const decision = decide(findings, cfg.strict);
         void input;
         const overLimit = decision === 'block' && s.blocks >= cfg.maxBlocks;
-        const v = buildVerdict({ sessionId, harness, base: s.baseTree, cur, task: s.prompt, findings, result, originalTests, judge, strict: cfg.strict, blockCount: s.blocks + (decision === 'block' && !overLimit ? 1 : 0), t0, overrides: overridesFromPrompts(s.prompts ?? (s.prompt ? [s.prompt] : [])) });
+        // Shadow mode. Every stop is recorded, not only the blocking ones, because "3 of 40" is the number that tells
+        // someone whether to turn blocking on and "3" on its own is not.
+        const decidingRules = [...new Set(findings.filter((f) => !f.overridden && (f.severity === 'block' || cfg.strict)).map((f) => f.rule))];
+        const shadowState = cfg.shadow ? await recordStop(root, sessionId, decision === 'block', decidingRules) : null;
+        const shadowStatus = cfg.shadow && shadowState ? statusOf(cfg.shadow, shadowState) : null;
+        // Shadow mode covers the gate's judgement of the work. It deliberately does not cover the gate's own integrity:
+        // `gate-config-changed` is documented as the one finding no override can lift, and a window in which an agent
+        // may rewrite `gatekeep.config.json` unopposed is a window in which it can extend the window. Same reasoning for
+        // a tampered baseline and for index flags that hide edits from the snapshot.
+        const gateIntegrity = decidingRules.filter((r) => familyOf(r) === 'gate');
+        const shadowed = cfg.shadow !== null && decision === 'block' && gateIntegrity.length === 0;
+        const v = buildVerdict({ sessionId, harness, base: s.baseTree, cur, task: s.prompt, findings, result, originalTests, judge, strict: cfg.strict, blockCount: s.blocks + (decision === 'block' && !overLimit && !shadowed ? 1 : 0), t0, overrides: overridesFromPrompts(s.prompts ?? (s.prompt ? [s.prompt] : [])) });
+        if (shadowed)
+            v.shadowed = true;
         const vp = await writeVerdict(root, v);
         s.lastVerdict = vp;
         // One mechanism for both outcomes: exit 0 with JSON on stdout. `decision: "block"` is the documented Stop-hook
         // field and feeds `reason` back to the agent as its next instruction; `systemMessage` is what reaches the human.
         // Exit 2 with stderr blocks too, but cannot carry a message to the user in the same breath.
+        if (shadowed) {
+            // The gate decided block and did not act on it. The report still goes to the human, with the tally and the offer.
+            await saveSession(root, s, gd);
+            console.log(JSON.stringify({
+                systemMessage: `${shadowNote(cfg.shadow, shadowState, shadowStatus)}\n\n${formatReport(v, { forAgent: false, verdictPath: vp })}`,
+            }));
+            return 0;
+        }
         if (decision === 'block' && !overLimit) {
             s.blocks += 1;
             await saveSession(root, s, gd);
+            const shadowExempt = cfg.shadow !== null
+                ? ` Shadow mode is on, but it does not cover the gate's own integrity (${gateIntegrity.join(', ')}), so this one blocked.`
+                : '';
             console.log(JSON.stringify({
                 decision: 'block',
                 reason: formatReport(v, { forAgent: true, verdictPath: vp }),
-                systemMessage: `gatekeep blocked this stop (block ${s.blocks} of ${cfg.maxBlocks}); see ${vp}`,
+                systemMessage: `gatekeep blocked this stop (block ${s.blocks} of ${cfg.maxBlocks}); see ${vp}.${shadowExempt}`,
             }));
             return 0;
         }
@@ -513,6 +551,8 @@ async function cmdInstall(args, cwd) {
             const detected = await detectTestCommand(root);
             await fs.writeFile(cfgPath, defaultConfigText(detected));
             console.log(`Wrote ${CONFIG_FILENAME} (commit it; the agent may not modify it during a session)`);
+            console.log(`  shadow mode: for ${DEFAULT_SHADOW_DAYS} days or ${DEFAULT_SHADOW_SESSIONS} sessions gatekeep reports what it would have blocked and blocks nothing.`);
+            console.log('  `gatekeep shadow` shows the tally; `gatekeep shadow --off` turns blocking on whenever you are ready.');
             if (detected) {
                 console.log(`  testCommand: ${detected.command}  (detected from ${detected.from})`);
                 console.log('  At Stop, the tests as they stood at session start are restored and run against the final code.');
@@ -751,6 +791,80 @@ async function cmdCalibrate(args, cwd) {
     }
     return 0;
 }
+/**
+ * `gatekeep shadow` — see, end, or extend the reporting window.
+ *
+ * Ending it is the interesting direction: `--off` is how a user turns blocking on, which is the one decision the
+ * whole window exists to inform. It writes `"shadow": null` rather than deleting the key, so the file still says
+ * out loud that this repository considered shadow mode and chose against it.
+ */
+async function writeShadowConfig(root, value, note) {
+    const file = path.join(root, CONFIG_FILENAME);
+    const raw = await readConfigText(root);
+    let j;
+    if (raw === null)
+        j = JSON.parse(defaultConfigText(await detectTestCommand(root)));
+    else {
+        try {
+            j = JSON.parse(raw);
+        }
+        catch (e) {
+            throw new UserError(`${CONFIG_FILENAME} is not valid JSON (${e.message}); fix it before changing shadow mode`);
+        }
+        if (typeof j !== 'object' || j === null || Array.isArray(j))
+            throw new UserError(`${CONFIG_FILENAME} must contain a JSON object`);
+    }
+    j['// shadow'] = note;
+    j.shadow = value;
+    await fs.writeFile(file, JSON.stringify(j, null, 2) + '\n');
+    return file;
+}
+async function cmdShadow(args, cwd) {
+    const root = await repoRoot(cwd);
+    if (!root)
+        throw new UserError('not inside a git repository');
+    const { cfg } = await configFor(root, null, null);
+    const st = await readShadowState(root);
+    if (args.flags.off === true) {
+        const file = await writeShadowConfig(root, null, `blocking turned on ${new Date().toISOString().slice(0, 10)} after ${st.stops} stop(s) in shadow mode, ${st.wouldHaveBlocked} of which would have been blocked.`);
+        console.log(`Blocking is on. gatekeep will now stop the agent when it finds a blocking finding.`);
+        console.log(`  ${file} — commit it so the rest of the team gets the same gate.`);
+        if (st.stops)
+            console.log(`  Shadow mode saw ${st.stops} stop(s); ${st.wouldHaveBlocked} would have been blocked.`);
+        return 0;
+    }
+    if (args.flags.extend === true || args.flags.on === true) {
+        const days = parseInt(String(args.flags.days ?? DEFAULT_SHADOW_DAYS), 10) || DEFAULT_SHADOW_DAYS;
+        const sessions = parseInt(String(args.flags.sessions ?? DEFAULT_SHADOW_SESSIONS), 10) || DEFAULT_SHADOW_SESSIONS;
+        const next = { ...defaultShadow(), days, sessions };
+        const file = await writeShadowConfig(root, next, `reporting only until ${days} day(s) or ${sessions} session(s) from ${next.startedAt}. Turn blocking on with \`gatekeep shadow --off\`.`);
+        console.log(`Shadow mode ${args.flags.extend === true ? 'extended' : 'on'}: reporting, not blocking, for ${days} day(s) or ${sessions} session(s) from ${next.startedAt}.`);
+        console.log(`  ${file}`);
+        return 0;
+    }
+    if (!cfg.shadow) {
+        console.log('Shadow mode is off: gatekeep blocks when it finds a blocking finding.');
+        if (st.stops)
+            console.log(`  It ran in shadow mode for ${st.stops} stop(s) before that, ${st.wouldHaveBlocked} of which would have been blocked.`);
+        console.log('  Turn it back on with `gatekeep shadow --on`.');
+        return 0;
+    }
+    const status = statusOf(cfg.shadow, st);
+    console.log(`Shadow mode is on since ${cfg.shadow.startedAt}: findings are reported, nothing is blocked.`);
+    console.log(`  window: ${cfg.shadow.days ?? '—'} day(s) or ${cfg.shadow.sessions ?? '—'} session(s)` +
+        (status.elapsed ? '  — elapsed' : `, ${status.daysLeft ?? '—'} day(s) / ${status.sessionsLeft ?? '—'} session(s) left`));
+    console.log(`  seen: ${st.sessions.length} session(s), ${st.stops} stop(s), ${st.wouldHaveBlocked} would have been blocked`);
+    const ranked = Object.entries(st.rules).sort((a, b) => b[1] - a[1]);
+    for (const [rule, n] of ranked.slice(0, 10))
+        console.log(`    ${rule.padEnd(30)} ${String(n).padStart(3)}`);
+    console.log('');
+    console.log(status.elapsed
+        ? 'The window has run its course. Turn blocking on with `gatekeep shadow --off`, or extend it with `gatekeep shadow --extend`.'
+        : 'Turn blocking on early with `gatekeep shadow --off`.');
+    if (ranked.length)
+        console.log('Rules firing more than you want? `gatekeep calibrate` replays your history and can downgrade them.');
+    return 0;
+}
 async function cmdUninstall(args, cwd) {
     const target = args.flags.global === true ? 'global' : args.flags.shared === true ? 'project-shared' : 'project-local';
     const r = await uninstallClaudeCode(target, cwd);
@@ -828,6 +942,18 @@ async function cmdStatus(cwd) {
     console.log(recorder ? 'Claims recorder: wired (PostToolUse)' : 'Claims recorder: not wired — the four claims rules cannot run. `gatekeep install` adds it.');
     const prot = await protectedIn(root, settingsFiles(root));
     console.log(prot.length ? `protect-tests: on — ${prot.map((p) => `${p.file} (${p.deny} deny entries)`).join(', ')}` : 'protect-tests: off (run `gatekeep protect-tests` to make the test tree read-only)');
+    // Whether the gate can actually stop anything is the first thing someone reading `status` needs to know.
+    {
+        const { cfg } = await configFor(root, null, null);
+        if (!cfg.shadow)
+            console.log('Blocking: on');
+        else {
+            const st = await readShadowState(root);
+            const status = statusOf(cfg.shadow, st);
+            console.log(`Blocking: off — shadow mode since ${cfg.shadow.startedAt}${status.elapsed ? ', window elapsed' : `, ${status.daysLeft ?? '—'} day(s) / ${status.sessionsLeft ?? '—'} session(s) left`}`);
+            console.log(`  ${st.wouldHaveBlocked} of ${st.stops} stop(s) would have been blocked. \`gatekeep shadow --off\` turns blocking on.`);
+        }
+    }
     const { problems } = parseConfig(await readConfigText(root));
     for (const p of problems)
         console.log(`  config problem: ${p}`);
@@ -864,6 +990,7 @@ async function main() {
         case 'install': return cmdInstall(args, cwd);
         case 'protect-tests': return cmdProtectTests(args, cwd);
         case 'calibrate': return cmdCalibrate(args, cwd);
+        case 'shadow': return cmdShadow(args, cwd);
         case 'uninstall': return cmdUninstall(args, cwd);
         case 'status': return cmdStatus(cwd);
         case 'report': return cmdReport(args, cwd);

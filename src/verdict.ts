@@ -30,6 +30,8 @@ export interface Verdict {
   durationMs: number;
   /** Overrides that lifted at least one finding, with who granted them. */
   overrides?: Override[];
+  /** Set when shadow mode kept a blocking decision from stopping the agent. The decision above is still what the gate decided. */
+  shadowed?: true;
 }
 
 export function decide(findings: Finding[], strict: boolean): Verdict['decision'] {
@@ -96,7 +98,9 @@ export function formatReport(v: Verdict, opts: { forAgent: boolean; verdictPath?
   const blocks = f.filter((x) => x.severity === 'block' || (blocking && x.severity === 'warn' && !f.some((y) => y.severity === 'block')));
   const warns = f.filter((x) => !blocks.includes(x));
   const lines: string[] = [];
-  const head = v.decision === 'block' ? 'BLOCKED' : v.decision === 'warn' ? 'PASSED WITH WARNINGS' : 'PASSED';
+  // `shadowed` means the gate decided block and shadow mode did not act on it. Printing BLOCKED there, directly
+  // under a line saying nothing was blocked, is the kind of contradiction that teaches people to ignore output.
+  const head = v.decision === 'block' ? (v.shadowed ? 'WOULD HAVE BLOCKED' : 'BLOCKED') : v.decision === 'warn' ? 'PASSED WITH WARNINGS' : 'PASSED';
   const ex = v.checks.testIntegrity.examined.length, src = v.checks.testIntegrity.changedSourceFiles.length;
   // Name the families that actually fired. "test integrity: 1 blocking, 0 test file(s) examined" for a scope finding
   // reads as a bug in the gate rather than a finding about the change.

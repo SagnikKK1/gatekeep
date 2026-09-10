@@ -2,6 +2,8 @@
 
 An independent verification gate for AI coding agents. It runs when the agent tries to say "done" and blocks it when the work was faked instead of finished: tests tampered with, checks weakened, claims that nothing in the session backs up.
 
+A new install spends its first week reporting rather than blocking, so you see what it would have cost before it costs you anything — see [the first week does not block](#the-first-week-does-not-block).
+
 ![The agent reports "Done — all tests pass." gatekeep blocks the stop with three findings: two tests deleted and one assertion replaced with a truthiness check](assets/block.svg)
 
 <sub>Real output from the Stop hook, not a mockup.</sub>
@@ -16,6 +18,7 @@ cd /path/to/your/project
 gatekeep install                        # wires Claude Code hooks into .claude/settings.local.json
 gatekeep status                         # confirms the hooks and shows the state directory
 gatekeep calibrate                      # what the gate would have done to your last 200 commits
+gatekeep shadow                         # the first week reports instead of blocking; this shows the tally
 ```
 
 As a Claude Code plugin instead, which wires the same four hooks for every project without touching any repository:
@@ -144,6 +147,37 @@ A replay covers the rules that read the diff. It cannot cover the original-tests
 the claims family (no live session, so nothing was claimed) or the model-backed judge, and it says so every time
 rather than letting silence imply coverage.
 
+## The first week does not block
+
+A new install starts in **shadow mode**: for 7 days or 10 sessions, gatekeep reports what it would have blocked and
+blocks nothing. Then it asks.
+
+```bash
+gatekeep shadow                 # the window, and what it would have stopped so far
+gatekeep shadow --off           # turn blocking on
+gatekeep shadow --extend        # keep reporting for another window
+```
+
+At a stop inside the window the agent is not interrupted; you get the finding instead:
+
+```
+gatekeep is in shadow mode: this would have blocked the stop, and did not. 6 day(s) or 9 session(s) left in
+the window; 1 of 1 stop(s) so far would have been blocked. Turn blocking on now with `gatekeep shadow --off`.
+
+GATEKEEP WOULD HAVE BLOCKED — test integrity: 1 blocking, 0 warning(s)
+  [block] test-deleted  tests/test_calc.py:6 [test_two]
+```
+
+When the window runs out the gate **does not start blocking on its own** — it keeps reporting and repeats the offer
+every stop. A tool that quietly begins interrupting you on day eight is a tool that ambushes you on day eight.
+
+Two things shadow mode deliberately does not do. It does not cover the gate's own integrity: `gate-config-changed`,
+a tampered baseline, and index flags that hide edits from the snapshot all still block inside the window, because a
+window in which an agent may rewrite `gatekeep.config.json` unopposed is a window in which it can extend itself. And
+it does not touch `gatekeep run`, so CI blocks from day one — the window is about the person at the terminal.
+
+Skip it entirely with `gatekeep shadow --off` right after installing, or set `"shadow": null` in the config.
+
 ## Prevention: make the test tree read-only
 
 Everything above is a gate — it reads what happened and decides afterwards. `protect-tests` is the other half: it
@@ -189,6 +223,7 @@ The GitHub Action posts findings as check annotations on the changed lines. Code
   "maxBlocks": 3,
   "strict": false,
   "testCommand": "npm test --silent",
+  "shadow": { "startedAt": "2026-09-10", "days": 7, "sessions": 10 },
   "judge": { "model": "claude-opus-5" },
   "extraProtectedPaths": ["services/ledger/**"],
   "extraTestGlobs": ["**/qa/**/*.py"],
@@ -196,6 +231,10 @@ The GitHub Action posts findings as check annotations on the changed lines. Code
   "rules": { "retry-added": "off", "test-conditionally-skipped": "block" }
 }
 ```
+
+`"shadow": null` means the gate blocks; an object means it reports for that window and then asks (`gatekeep shadow --off`
+writes the `null`). A shadow window with both limits set to `null` would never end, so it is reported as a problem
+rather than accepted quietly.
 
 Unknown keys and rule names are reported as `config-invalid` warnings rather than silently ignored.
 
