@@ -9,7 +9,7 @@
       "name": "gatekeep",
       "source": "./",
       "description": "Blocks the agent from declaring done when it weakened the tests or the checks that grade it.",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "author": {
         "name": "Sagnik Dey"
       },
