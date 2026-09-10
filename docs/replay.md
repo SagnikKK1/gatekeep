@@ -143,9 +143,9 @@ unaffected — that was measured on agent runs, not on this corpus. But **"zero 
 merely scoped.** The honest statement is that it was never measured on data it was not tuned against until today.
 
 **Go table-driven subtests read as deleted tests.** Findings of the form `Test "TestValidateGrammarSchema >
-<tt.name>" removed` — a subtest whose name is a variable rather than a literal — account for a large share of
-ollama's `test-deleted` findings and appear in no other repository in either set. cobra, the Go repository in the
-tuning set, barely uses table-driven tests, so the rules were never fitted against this shape. This is the clearest
+<tt.name>" removed`, where the subtest name is a variable rather than a literal, account for **54 of ollama's 189
+`test-deleted` findings** and appear in no other repository in either set. cobra, the Go repository in the tuning
+set, barely uses table-driven tests, so the rules were never fitted against this shape. This is the clearest
 single defect the exercise turned up.
 
 **Ten rules that never fire in-sample do fire out of sample, eight of them blocking.** `mock-on-changed-module`
