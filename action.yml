@@ -1,4 +1,4 @@
-name: gatekeep
+name: gatekeep-agent
 description: Verify that a pull request did not weaken its tests, checks, or guards. Computes the verdict from the diff in CI; never trusts a verdict uploaded from a developer machine.
 author: Sagnik Dey
 branding:
