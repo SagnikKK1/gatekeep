@@ -44,7 +44,8 @@
     "claude-code",
     "testing",
     "verification",
-    "reward-hacking",
+    "ci",
+    "agent-safety",
     "git-hooks",
     "tree-sitter"
   ],

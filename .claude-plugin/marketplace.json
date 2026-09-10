@@ -19,7 +19,8 @@
         "testing",
         "verification",
         "hooks",
-        "reward-hacking"
+        "ci",
+        "agent-safety"
       ]
     }
   ],

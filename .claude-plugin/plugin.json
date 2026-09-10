@@ -6,6 +6,6 @@
   "homepage": "https://github.com/SagnikKK1/gatekeep",
   "repository": "https://github.com/SagnikKK1/gatekeep",
   "license": "Apache-2.0",
-  "keywords": ["testing", "verification", "hooks", "reward-hacking", "code-review"],
+  "keywords": ["testing", "verification", "hooks", "ci", "code-review", "agent-safety"],
   "hooks": "./hooks/hooks.json"
 }
