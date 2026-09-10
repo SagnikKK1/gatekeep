@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { repoRoot } from './git.js';
+import { STOP_HOOK_TIMEOUT_MS } from './config.js';
 const execFileP = promisify(execFile);
 function shellQuote(s) {
     return /^[A-Za-z0-9_./:@%+=-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
@@ -52,7 +53,7 @@ export async function installClaudeCode(target, cwd) {
         SessionStart: { command: `${prefix} hook session-start --harness claude-code`, timeout: 120 },
         UserPromptSubmit: { command: `${prefix} hook prompt --harness claude-code`, timeout: 10 },
         PostToolUse: { command: `${prefix} hook tool-use --harness claude-code`, timeout: 10 },
-        Stop: { command: `${prefix} hook stop --harness claude-code`, timeout: 600 },
+        Stop: { command: `${prefix} hook stop --harness claude-code`, timeout: STOP_HOOK_TIMEOUT_MS / 1000 },
     };
     const added = [], updated = [];
     for (const [event, h] of Object.entries(wanted)) {

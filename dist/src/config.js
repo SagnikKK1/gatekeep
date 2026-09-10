@@ -3,6 +3,9 @@ import path from 'node:path';
 import { DEFAULT_RULE_CONFIG, DEFAULT_SEVERITIES } from './rules.js';
 import { DEFAULT_JUDGE_MODEL, JUDGE_EFFORTS } from './judge.js';
 export const CONFIG_FILENAME = 'gatekeep.config.json';
+/** The Stop hook is installed with this ceiling (`src/install.ts`); the test budget has to fit inside it with room to spare. */
+export const STOP_HOOK_TIMEOUT_MS = 600_000;
+const MAX_TEST_BUDGET_MS = 540_000;
 export function defaultConfig() {
     return { rules: { ...DEFAULT_RULE_CONFIG, severities: { ...DEFAULT_RULE_CONFIG.severities } }, maxBlocks: 3, strict: false, testCommand: null, testTimeoutMs: 300000, judge: null };
 }
@@ -71,8 +74,11 @@ export function parseConfig(raw) {
             problems.push('"testCommand" must be a non-empty string or null');
     }
     if (j.testTimeoutMs !== undefined) {
-        if (typeof j.testTimeoutMs === 'number' && j.testTimeoutMs > 0)
+        if (typeof j.testTimeoutMs === 'number' && j.testTimeoutMs > 0) {
             cfg.testTimeoutMs = j.testTimeoutMs;
+            if (j.testTimeoutMs > MAX_TEST_BUDGET_MS)
+                problems.push(`"testTimeoutMs" of ${j.testTimeoutMs} ms leaves the Stop hook no room inside its ${STOP_HOOK_TIMEOUT_MS} ms limit; a hook the harness kills returns no decision and the gate passes silently`);
+        }
         else
             problems.push('"testTimeoutMs" must be a positive number');
     }

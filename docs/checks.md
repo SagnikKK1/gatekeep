@@ -21,7 +21,7 @@ At stop, gatekeep exports the current tree to a scratch directory, puts back eve
 | Both fail | `tests-failing` (warn): the work is not done, but nothing was hidden |
 | Command times out or cannot start | `test-run-timeout` / `test-run-error` (warn) |
 
-The second run only happens when the first fails. The suite runs in a temporary export, never in the working tree. Because this runs your whole test command, it is only ever on when `testCommand` is set — by the detection above, or by you; the hook's installed timeout is 10 minutes and `testTimeoutMs` defaults to 5.
+The second run only happens when the first fails. The suite runs in a temporary export, never in the working tree. Because this runs your whole test command, it is only ever on when `testCommand` is set — by the detection above, or by you. `testTimeoutMs` (default 5 minutes) is the budget for **the whole check**, not for one run: both runs and the tree exports come out of it, so the check cannot outlive the Stop hook's own 10-minute ceiling. That matters because a hook the harness kills returns no decision, which means the gate would pass silently — so when the budget runs out you get a `test-run-timeout` warning instead.
 
 # Claim verification
 

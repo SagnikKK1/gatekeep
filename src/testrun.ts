@@ -14,6 +14,11 @@ const execFileP = promisify(execFile);
 export interface TestRunConfig {
   /** The repository's own test command, run with `sh -c`. Null disables the check. */
   testCommand: string | null;
+  /**
+   * Budget for the whole check, not for one run. Both runs and the tree exports come out of it, because the Stop
+   * hook is installed with a 600 s ceiling: two independent 300 s runs would be killed by the harness mid-check,
+   * and a hook the harness kills returns no decision at all, so the gate would fail open.
+   */
   testTimeoutMs: number;
 }
 
@@ -41,6 +46,7 @@ const OUTPUT_TAIL = 4000;
 export async function runOriginalTests(root: string, baseTree: string, curTree: string, changes: FileChange[], rules: RuleConfig, cfg: TestRunConfig): Promise<TestRunResult | null> {
   if (!cfg.testCommand) return null;
   const t0 = Date.now();
+  const deadline = t0 + cfg.testTimeoutMs;
   const relevant = changes.some((c) => isTestFile(c.path, rules) || (c.oldPath !== undefined && isTestFile(c.oldPath, rules)) || matchesAny(c.path, rules.testConfigGlobs) || langFor(c.path) !== null);
   if (!relevant) return { status: 'skipped', originalExit: null, currentExit: null, originalOutput: '', currentOutput: '', restoredTestFiles: [], durationMs: Date.now() - t0, reason: 'no code, test or test-config changes' };
 
@@ -50,14 +56,16 @@ export async function runOriginalTests(root: string, baseTree: string, curTree: 
     await exportTree(root, curTree, original);
     const restored = await overlayOriginalTests(root, baseTree, changes, rules, original);
     await linkDeps(root, original);
-    const first = await runCommand(cfg.testCommand, original, cfg.testTimeoutMs);
+    const first = await runCommand(cfg.testCommand, original, Math.max(1, deadline - Date.now()));
     if (first.error) return { status: 'error', originalExit: first.code, currentExit: null, originalOutput: first.output, currentOutput: '', restoredTestFiles: restored, durationMs: Date.now() - t0, reason: first.error };
     if (first.code === 0) return { status: 'pass', originalExit: 0, currentExit: null, originalOutput: first.output, currentOutput: '', restoredTestFiles: restored, durationMs: Date.now() - t0 };
     // Original tests fail. Does the agent's own copy pass? That difference is the finding.
     const current = path.join(scratch, 'current');
     await exportTree(root, curTree, current);
     await linkDeps(root, current);
-    const second = await runCommand(cfg.testCommand, current, cfg.testTimeoutMs);
+    const left = deadline - Date.now();
+    // Out of budget: say so rather than spending another full timeout the hook does not have.
+    const second = left > 0 ? await runCommand(cfg.testCommand, current, left) : { code: -1, output: '', error: 'timeout' };
     return { status: 'fail', originalExit: first.code, currentExit: second.error ? null : second.code, originalOutput: first.output, currentOutput: second.output, restoredTestFiles: restored, durationMs: Date.now() - t0, reason: second.error };
   } finally {
     await fs.rm(scratch, { recursive: true, force: true });
@@ -69,7 +77,12 @@ export function testRunFindings(r: TestRunResult | null, severities: Record<stri
   const sev = (rule: string, dflt: Severity): Severity => severities[rule] ?? dflt;
   const mk = (rule: string, dflt: Severity, message: string): Finding[] => (sev(rule, dflt) === 'off' ? [] : [{ rule, severity: sev(rule, dflt), file: '.', message }]);
   const tail = (s: string) => s.trim().split('\n').slice(-12).join('\n');
-  if (r.status === 'error') return mk('test-run-error', 'warn', `Could not run the test command: ${r.reason}`);
+  // A run the clock killed is a timeout wherever it happened, not an unexplained error.
+  if (r.status === 'error') {
+    return r.reason === 'timeout'
+      ? mk('test-run-timeout', 'warn', `The test command exceeded its time limit`)
+      : mk('test-run-error', 'warn', `Could not run the test command: ${r.reason}`);
+  }
   if (r.status !== 'fail') return [];
   if (r.currentExit === 0) {
     return mk('original-tests-fail', 'block', `The tests as they were at session start fail against the current code (exit ${r.originalExit}) while the edited tests pass. Restored for this run: ${r.restoredTestFiles.join(', ') || 'none'}.\n${tail(r.originalOutput)}`);

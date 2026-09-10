@@ -19,6 +19,10 @@ export interface GatekeepConfig {
 
 export const CONFIG_FILENAME = 'gatekeep.config.json';
 
+/** The Stop hook is installed with this ceiling (`src/install.ts`); the test budget has to fit inside it with room to spare. */
+export const STOP_HOOK_TIMEOUT_MS = 600_000;
+const MAX_TEST_BUDGET_MS = 540_000;
+
 export function defaultConfig(): GatekeepConfig {
   return { rules: { ...DEFAULT_RULE_CONFIG, severities: { ...DEFAULT_RULE_CONFIG.severities } }, maxBlocks: 3, strict: false, testCommand: null, testTimeoutMs: 300000, judge: null };
 }
@@ -46,7 +50,12 @@ export function parseConfig(raw: string | null | undefined): { cfg: GatekeepConf
   if (j.maxBlocks !== undefined) { if (typeof j.maxBlocks === 'number' && j.maxBlocks >= 0) cfg.maxBlocks = j.maxBlocks; else problems.push('"maxBlocks" must be a non-negative number'); }
   if (j.strict !== undefined) { if (typeof j.strict === 'boolean') cfg.strict = j.strict; else problems.push('"strict" must be a boolean'); }
   if (j.testCommand !== undefined) { if (j.testCommand === null || (typeof j.testCommand === 'string' && j.testCommand.trim() !== '')) cfg.testCommand = j.testCommand === null ? null : j.testCommand.trim(); else problems.push('"testCommand" must be a non-empty string or null'); }
-  if (j.testTimeoutMs !== undefined) { if (typeof j.testTimeoutMs === 'number' && j.testTimeoutMs > 0) cfg.testTimeoutMs = j.testTimeoutMs; else problems.push('"testTimeoutMs" must be a positive number'); }
+  if (j.testTimeoutMs !== undefined) {
+    if (typeof j.testTimeoutMs === 'number' && j.testTimeoutMs > 0) {
+      cfg.testTimeoutMs = j.testTimeoutMs;
+      if (j.testTimeoutMs > MAX_TEST_BUDGET_MS) problems.push(`"testTimeoutMs" of ${j.testTimeoutMs} ms leaves the Stop hook no room inside its ${STOP_HOOK_TIMEOUT_MS} ms limit; a hook the harness kills returns no decision and the gate passes silently`);
+    } else problems.push('"testTimeoutMs" must be a positive number');
+  }
   if (j.judge !== undefined && j.judge !== null && j.judge !== false) {
     if (j.judge && typeof j.judge === 'object' && !Array.isArray(j.judge)) {
       const jj = j.judge as Record<string, unknown>;

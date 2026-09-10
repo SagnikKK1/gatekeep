@@ -14,7 +14,8 @@ import { appendToolEvent, readToolEvents } from '../src/session.js';
 import { DEFAULT_RULE_CONFIG } from '../src/rules.js';
 import { jsTargetHits, jsSpecifierStem, pythonTargetHits } from '../src/lang.js';
 import { formatReport, decide, type Verdict } from '../src/verdict.js';
-import { splicePackageJson, testRunFindings } from '../src/testrun.js';
+import { splicePackageJson, testRunFindings, runOriginalTests } from '../src/testrun.js';
+import type { FileChange } from '../src/model.js';
 
 test('parseConfig never throws and reports problems', () => {
   assert.equal(parseConfig(null).problems.length, 0);
@@ -280,6 +281,47 @@ test('test-run findings map results to rules', () => {
   const f3 = testRunFindings({ ...base, status: 'fail', originalExit: -1, currentExit: null, reason: 'timeout' }, {});
   assert.equal(f3[0]?.rule, 'test-run-timeout');
   assert.equal(testRunFindings({ ...base, status: 'fail', originalExit: 1, currentExit: 0 }, { 'original-tests-fail': 'off' }).length, 0);
+  // A first run the clock kills is a timeout, not an unexplained error.
+  const f4 = testRunFindings({ ...base, status: 'error', originalExit: -1, currentExit: null, reason: 'timeout' }, {});
+  assert.equal(f4[0]?.rule, 'test-run-timeout');
+  const f5 = testRunFindings({ ...base, status: 'error', originalExit: -1, currentExit: null, reason: 'spawn ENOENT' }, {});
+  assert.equal(f5[0]?.rule, 'test-run-error');
+});
+
+/**
+ * The Stop hook is installed with a 600 s ceiling, so the two runs may not each take `testTimeoutMs`: a hook the
+ * harness kills returns no decision and the gate passes silently. Both runs come out of one budget.
+ */
+test('the original-tests check spends one budget across both runs', async () => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'gk-budget-'));
+  const git = (...a: string[]) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim();
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 't@example.com');
+  git('config', 'user.name', 'T');
+  await fs.mkdir(path.join(repo, 'tests'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'a.py'), 'def add(a, b):\n    return a + b\n');
+  await fs.writeFile(path.join(repo, 'tests/test_a.py'), 'def test_add():\n    assert add(1, 2) == 3\n');
+  git('add', '-A'); git('commit', '-qm', 'base');
+  const baseTree = git('rev-parse', 'HEAD^{tree}');
+  await fs.writeFile(path.join(repo, 'a.py'), 'def add(a, b):\n    return 3\n');
+  git('add', '-A'); git('commit', '-qm', 'after');
+  const curTree = git('rev-parse', 'HEAD^{tree}');
+
+  // Burns most of the budget where the original tests were restored, then hangs on the agent's own copy. The
+  // first run has to be slow for this to discriminate: if it returned instantly, a per-run timeout would look
+  // the same as a shared one.
+  const budget = 4000;
+  const cmd = 'case "$(/bin/pwd)" in *original-tests*) sleep 3.5; exit 1;; *) sleep 30; exit 1;; esac';
+  const changes: FileChange[] = [{ path: 'a.py', status: 'M' }];
+  const r = await runOriginalTests(repo, baseTree, curTree, changes, DEFAULT_RULE_CONFIG, { testCommand: cmd, testTimeoutMs: budget });
+  await fs.rm(repo, { recursive: true, force: true });
+
+  assert.equal(r?.status, 'fail');
+  assert.equal(r?.reason, 'timeout');
+  // With one shared budget this lands near 4 s. With a timeout per run it was 3.5 s + 4 s, and a real suite at the
+  // 300 s default made it 600 s, which is the Stop hook's whole limit.
+  assert.ok((r?.durationMs ?? 0) < budget * 1.4, `took ${r?.durationMs} ms against a ${budget} ms budget`);
+  assert.equal(testRunFindings(r, {})[0]?.rule, 'test-run-timeout');
 });
 
 test('every fixture file is tracked by git (a fixture .gitignore must not hide its own files from CI)', () => {

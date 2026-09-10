@@ -19,6 +19,7 @@ export async function runOriginalTests(root, baseTree, curTree, changes, rules, 
     if (!cfg.testCommand)
         return null;
     const t0 = Date.now();
+    const deadline = t0 + cfg.testTimeoutMs;
     const relevant = changes.some((c) => isTestFile(c.path, rules) || (c.oldPath !== undefined && isTestFile(c.oldPath, rules)) || matchesAny(c.path, rules.testConfigGlobs) || langFor(c.path) !== null);
     if (!relevant)
         return { status: 'skipped', originalExit: null, currentExit: null, originalOutput: '', currentOutput: '', restoredTestFiles: [], durationMs: Date.now() - t0, reason: 'no code, test or test-config changes' };
@@ -28,7 +29,7 @@ export async function runOriginalTests(root, baseTree, curTree, changes, rules, 
         await exportTree(root, curTree, original);
         const restored = await overlayOriginalTests(root, baseTree, changes, rules, original);
         await linkDeps(root, original);
-        const first = await runCommand(cfg.testCommand, original, cfg.testTimeoutMs);
+        const first = await runCommand(cfg.testCommand, original, Math.max(1, deadline - Date.now()));
         if (first.error)
             return { status: 'error', originalExit: first.code, currentExit: null, originalOutput: first.output, currentOutput: '', restoredTestFiles: restored, durationMs: Date.now() - t0, reason: first.error };
         if (first.code === 0)
@@ -37,7 +38,9 @@ export async function runOriginalTests(root, baseTree, curTree, changes, rules, 
         const current = path.join(scratch, 'current');
         await exportTree(root, curTree, current);
         await linkDeps(root, current);
-        const second = await runCommand(cfg.testCommand, current, cfg.testTimeoutMs);
+        const left = deadline - Date.now();
+        // Out of budget: say so rather than spending another full timeout the hook does not have.
+        const second = left > 0 ? await runCommand(cfg.testCommand, current, left) : { code: -1, output: '', error: 'timeout' };
         return { status: 'fail', originalExit: first.code, currentExit: second.error ? null : second.code, originalOutput: first.output, currentOutput: second.output, restoredTestFiles: restored, durationMs: Date.now() - t0, reason: second.error };
     }
     finally {
@@ -50,8 +53,12 @@ export function testRunFindings(r, severities) {
     const sev = (rule, dflt) => severities[rule] ?? dflt;
     const mk = (rule, dflt, message) => (sev(rule, dflt) === 'off' ? [] : [{ rule, severity: sev(rule, dflt), file: '.', message }]);
     const tail = (s) => s.trim().split('\n').slice(-12).join('\n');
-    if (r.status === 'error')
-        return mk('test-run-error', 'warn', `Could not run the test command: ${r.reason}`);
+    // A run the clock killed is a timeout wherever it happened, not an unexplained error.
+    if (r.status === 'error') {
+        return r.reason === 'timeout'
+            ? mk('test-run-timeout', 'warn', `The test command exceeded its time limit`)
+            : mk('test-run-error', 'warn', `Could not run the test command: ${r.reason}`);
+    }
     if (r.status !== 'fail')
         return [];
     if (r.currentExit === 0) {
