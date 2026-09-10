@@ -2,6 +2,10 @@
 
 An independent verification gate for AI coding agents. It runs when the agent tries to say "done" and blocks it when the work was faked instead of finished: tests tampered with, checks weakened, claims that nothing in the session backs up.
 
+![The agent reports "Done — all tests pass." gatekeep blocks the stop with three findings: two tests deleted and one assertion replaced with a truthiness check](assets/block.svg)
+
+<sub>Real output from the Stop hook, not a mockup.</sub>
+
 ## Quick start
 
 Requires Node 20+ and git.

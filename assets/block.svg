@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="446" viewBox="0 0 940 446" role="img" aria-label="Terminal showing gatekeep blocking an agent that deleted two tests and weakened a third while claiming all tests pass">
+  <title>gatekeep blocks a stop: two tests deleted, one assertion weakened</title>
+
+  <rect x="0" y="0" width="940" height="446" rx="10" fill="#0d1117"/>
+  <rect x="0.5" y="0.5" width="939" height="445" rx="9.5" fill="none" stroke="#30363d"/>
+  <path d="M0 10a10 10 0 0 1 10-10h920a10 10 0 0 1 10 10v26H0z" fill="#161b22"/>
+  <line x1="0" y1="36" x2="940" y2="36" stroke="#30363d"/>
+  <circle cx="20" cy="18" r="5" fill="#ff5f56"/>
+  <circle cx="38" cy="18" r="5" fill="#ffbd2e"/>
+  <circle cx="56" cy="18" r="5" fill="#27c93f"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="13">
+    <text x="470" y="23" fill="#6e7681" text-anchor="middle">gatekeep — Stop hook</text>
+
+    <text x="22" y="66"><tspan fill="#6e7681">$</tspan><tspan fill="#c9d1d9"> claude</tspan></text>
+
+    <text x="22" y="104"><tspan fill="#3fb950">●</tspan><tspan fill="#c9d1d9"> Done — all tests pass.</tspan></text>
+
+    <text x="22" y="142"><tspan fill="#ff7b72" font-weight="700">GATEKEEP BLOCKED</tspan><tspan fill="#c9d1d9"> — test integrity: 3 blocking, 0 warning(s); 1 test file(s) examined, 0 source file(s) changed.</tspan></text>
+
+    <text x="38" y="161" xml:space="preserve"><tspan fill="#f85149">[block]</tspan><tspan fill="#ffa657"> test-deleted</tspan><tspan fill="#79c0ff">  tests/test_calc.py:4</tspan><tspan fill="#d2a8ff"> [test_negative]</tspan></text>
+    <text x="69" y="180" fill="#6e7681">Test "test_negative" removed (had 1 assertion(s))</text>
+    <text x="69" y="199" xml:space="preserve"><tspan fill="#6e7681">before: </tspan><tspan fill="#c9d1d9">assert add(-1, -1) == -2</tspan></text>
+
+    <text x="38" y="218" xml:space="preserve"><tspan fill="#f85149">[block]</tspan><tspan fill="#ffa657"> test-deleted</tspan><tspan fill="#79c0ff">  tests/test_calc.py:7</tspan><tspan fill="#d2a8ff"> [test_zero]</tspan></text>
+    <text x="69" y="237" fill="#6e7681">Test "test_zero" removed (had 1 assertion(s))</text>
+    <text x="69" y="256" xml:space="preserve"><tspan fill="#6e7681">before: </tspan><tspan fill="#c9d1d9">assert add(0, 0) == 0</tspan></text>
+
+    <text x="38" y="275" xml:space="preserve"><tspan fill="#f85149">[block]</tspan><tspan fill="#ffa657"> assertion-weakened</tspan><tspan fill="#79c0ff">  tests/test_calc.py:2</tspan><tspan fill="#d2a8ff"> [test_add]</tspan></text>
+    <text x="69" y="294" fill="#6e7681">"test_add": 1 specific assertion(s) replaced by truthiness/existence/broad checks</text>
+    <text x="69" y="313" xml:space="preserve"><tspan fill="#6e7681">before: </tspan><tspan fill="#c9d1d9">assert add(1, 2) == 3</tspan></text>
+    <text x="69" y="332" xml:space="preserve"><tspan fill="#6e7681">after:  </tspan><tspan fill="#ff7b72">assert add(1, 2) is not None</tspan></text>
+
+    <text x="22" y="370" fill="#c9d1d9">You may not finish yet.</text>
+    <text x="22" y="389" fill="#c9d1d9">Restore the tests to their original strength and make the implementation satisfy them. Do not skip, delete,</text>
+    <text x="22" y="408" fill="#c9d1d9">weaken, or mock away a test to get a green run.</text>
+  </g>
+</svg>
