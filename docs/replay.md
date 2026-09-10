@@ -74,6 +74,45 @@ set has now been looked at more, not less. And the tables below are still genera
 still describe the old loop; regenerate them from a fresh run before quoting them again rather than editing the
 numbers above into them by hand. That hand-editing is what the correction above this section is about.
 
+### The third corpus, 2026-09-10
+
+`test-oracle-in-source` was narrowed against the held-out set's false positives, which makes the held-out set a
+second tuning set: a number from it now describes the narrowing. So a third set was drawn, by
+`scripts/corpus-select.mjs` under the same mechanical rule, with **both** earlier sets and their owners excluded.
+(The script previously excluded only the tuning set, so a second run would have re-drawn the same repositories; the
+revision and its timing are disclosed in the script's own header, alongside the two before it.)
+
+| | |
+|---|---|
+| drawn | 2026-09-10, before the fix was written |
+| repositories | `Comfy-Org/ComfyUI`, `louislam/uptime-kuma`, `shadcn-ui/ui`, `fatedier/frp`, `spring-projects/spring-boot`, `astral-sh/uv`, `jekyll/jekyll` |
+| commits | 2,100 first-parent, 300 per repository |
+| record | [`corpus/holdout2-2026-09-10.jsonl`](corpus/holdout2-2026-09-10.jsonl) |
+
+**The fix that prompted it.** `test-oracle-in-source` counted every literal on a line carrying a conditional
+keyword, so `if (raw?.includes(marker)) return { command: 'pytest -q' }` was reported as *branching on*
+`pytest -q` when it branches on `raw.includes(marker)` and returns a domain constant the tests naturally also assert
+on. It now reads only the condition. Measured on this corpus, once each way:
+
+| | before the fix | after |
+|---|---|---|
+| `test-oracle-in-source` findings | 9 | **8** |
+| all findings | 912 | 911 |
+| commits with a blocking finding | 54 of 2,100 (2.57%) | 54 of 2,100 (2.57%) |
+
+**Read that honestly: the fix removes one finding in 2,100 commits.** It was found by running gatekeep on gatekeep's
+own repository, where the guarded-return shape is everywhere, and these seven repositories barely write it. The
+blocking rate does not move at all, because the rule is `warn` and never blocked anything to begin with. It is a
+correctness fix with a regression fixture, not a measurable improvement in the false-positive rate.
+
+**What the 8 remaining findings are.** A corpus of human commits contains no agent cheats, so every one of them is a
+false alarm: 4 in ComfyUI and 4 in frp, on 2,100 commits. That is the number to quote for this rule now — not the
+withdrawn zero, and not the held-out set's 12, which was measured before the fix and on a set that has since been
+tuned against.
+
+The same caveat as everywhere else on this page applies and is worth repeating because it is the one people skip:
+this is a **false-alarm rate, not precision.** There are no true positives in human history to divide by.
+
 ### The tuning set
 
 These are the seven repositories the rules were narrowed against, so **every number here is in-sample.** The

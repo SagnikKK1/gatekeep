@@ -34,6 +34,7 @@
  * gatekeep output existed yet that could have steered either one. Everything after this file was written is
  * measured once and reported as it came out.
  */
+import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isTestFile, DEFAULT_RULE_CONFIG } from '../dist/src/rules.js';
@@ -77,8 +78,28 @@ const MIN_COMMITS = 300;
 /** The corpus is meant to be human commits; a repository younger than the agent-coding era cannot supply them. */
 const CREATED_BEFORE = '2024-01-01';
 
-const tuningRepos = new Set(TUNING.map((t) => t.repo.toLowerCase()));
-const tuningOwners = new Set(TUNING.map((t) => t.repo.split('/')[0].toLowerCase()));
+/**
+ * Already-measured repositories, read from the corpus manifest this script last wrote rather than pasted in, so
+ * running it again always draws a set that has not been looked at.
+ *
+ * **Revised 2026-09-10, third revision, and this is the disclosure.** The script excluded only the tuning set, so a
+ * second run would have re-drawn the same held-out repositories. Every set it has already produced is now excluded
+ * as well, on the same terms as the tuning set: the repository, and its owner. This revision changes the population
+ * on repository identity alone and was made before the new set was drawn or any rule run against it. Its purpose is
+ * the standing constraint that a rule narrowed after looking at a corpus cannot be measured on that corpus again:
+ * `test-oracle-in-source` was fixed against the held-out set's false positives, so the held-out set is now a second
+ * tuning set and a number from it would describe the narrowing.
+ */
+function alreadyMeasured() {
+  try {
+    const m = JSON.parse(fs.readFileSync(new URL('./corpus.json', import.meta.url), 'utf8'));
+    return [...(m.holdout ?? []), ...(m.tuning ?? [])].map((r) => r.repo).filter(Boolean);
+  } catch { return []; }
+}
+
+const EXCLUDED = [...TUNING.map((t) => t.repo), ...alreadyMeasured()];
+const tuningRepos = new Set(EXCLUDED.map((r) => r.toLowerCase()));
+const tuningOwners = new Set(EXCLUDED.map((r) => r.split('/')[0].toLowerCase()));
 
 async function gh(args) {
   const { stdout } = await execFileP('gh', args, { maxBuffer: 64 * 1024 * 1024 });

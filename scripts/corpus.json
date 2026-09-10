@@ -12,7 +12,23 @@
       "created before 2024-01-01"
     ],
     "note": "Selection is blind to gatekeep findings: no rule is run until after this file is written.",
-    "revision": "Revised twice on 2026-09-10, both times before any rule had been run. (1) Teaching-topic and package-manifest filters added after version one selected TheAlgorithms/Python and krahets/hello-algo. (2) The created-before filter added after version two selected deepseek-ai/deepseek-harness (three weeks old) and affaan-m/ECC (January 2026), whose histories are plausibly agent-written. Repository identity drove both; no finding existed yet."
+    "revision": "Revised twice on 2026-09-10, both times before any rule had been run. (1) Teaching-topic and package-manifest filters added after version one selected TheAlgorithms/Python and krahets/hello-algo. (2) The created-before filter added after version two selected deepseek-ai/deepseek-harness (three weeks old) and affaan-m/ECC (January 2026), whose histories are plausibly agent-written. Repository identity drove both; no finding existed yet.",
+    "holdout2": {
+      "query": "language:<L> stars:>2000 archived:false fork:false pushed:>2026-03-01, stars descending",
+      "filters": [
+        "not in the tuning set and not the same owner",
+        "size <= 500000 KB",
+        "no teaching-content topic",
+        "a package manifest for the language at the repository root",
+        ">= 20 files matching gatekeep's own isTestFile",
+        ">= 300 first-parent commits",
+        "created before 2024-01-01"
+      ],
+      "note": "Selection is blind to gatekeep findings: no rule is run until after this file is written.",
+      "revision": "Revised twice on 2026-09-10, both times before any rule had been run. (1) Teaching-topic and package-manifest filters added after version one selected TheAlgorithms/Python and krahets/hello-algo. (2) The created-before filter added after version two selected deepseek-ai/deepseek-harness (three weeks old) and affaan-m/ECC (January 2026), whose histories are plausibly agent-written. Repository identity drove both; no finding existed yet."
+    },
+    "holdout2Drawn": "2026-09-10",
+    "holdout2Why": "test-oracle-in-source was narrowed against the held-out set, which makes that set a second tuning set; a new false-positive number needs a corpus nobody has looked at."
   },
   "tuning": [
     {
@@ -364,6 +380,508 @@
       "repo": "tauri-apps/tauri",
       "stars": 110959,
       "reason": "14 test files, under 20"
+    }
+  ],
+  "holdout2": [
+    {
+      "lang": "python",
+      "repo": "Comfy-Org/ComfyUI",
+      "stars": 132359,
+      "createdAt": "2023-01-17",
+      "sizeKb": 97611,
+      "manifest": "pyproject.toml",
+      "testFiles": 132,
+      "testFilesTruncated": false,
+      "url": "https://github.com/Comfy-Org/ComfyUI.git",
+      "defaultBranch": "master"
+    },
+    {
+      "lang": "javascript",
+      "repo": "louislam/uptime-kuma",
+      "stars": 91214,
+      "createdAt": "2021-07-03",
+      "sizeKb": 38769,
+      "manifest": "package.json",
+      "testFiles": 48,
+      "testFilesTruncated": false,
+      "url": "https://github.com/louislam/uptime-kuma.git",
+      "defaultBranch": "master"
+    },
+    {
+      "lang": "typescript",
+      "repo": "shadcn-ui/ui",
+      "stars": 123514,
+      "createdAt": "2023-01-04",
+      "sizeKb": 71055,
+      "manifest": "package.json",
+      "testFiles": 281,
+      "testFilesTruncated": false,
+      "url": "https://github.com/shadcn-ui/ui.git",
+      "defaultBranch": "main"
+    },
+    {
+      "lang": "go",
+      "repo": "fatedier/frp",
+      "stars": 109317,
+      "createdAt": "2015-12-21",
+      "sizeKb": 32712,
+      "manifest": "go.mod",
+      "testFiles": 79,
+      "testFilesTruncated": false,
+      "url": "https://github.com/fatedier/frp.git",
+      "defaultBranch": "dev"
+    },
+    {
+      "lang": "java",
+      "repo": "spring-projects/spring-boot",
+      "stars": 81415,
+      "createdAt": "2012-10-19",
+      "sizeKb": 219351,
+      "manifest": "build.gradle",
+      "testFiles": 3423,
+      "testFilesTruncated": false,
+      "url": "https://github.com/spring-projects/spring-boot.git",
+      "defaultBranch": "main"
+    },
+    {
+      "lang": "rust",
+      "repo": "astral-sh/uv",
+      "stars": 89686,
+      "createdAt": "2023-10-02",
+      "sizeKb": 203998,
+      "manifest": "Cargo.toml",
+      "testFiles": 136,
+      "testFilesTruncated": false,
+      "url": "https://github.com/astral-sh/uv.git",
+      "defaultBranch": "main"
+    },
+    {
+      "lang": "ruby",
+      "repo": "jekyll/jekyll",
+      "stars": 51655,
+      "createdAt": "2008-10-20",
+      "sizeKb": 70994,
+      "manifest": "Gemfile",
+      "testFiles": 53,
+      "testFilesTruncated": false,
+      "url": "https://github.com/jekyll/jekyll.git",
+      "defaultBranch": "master"
+    }
+  ],
+  "rejected2": [
+    {
+      "lang": "python",
+      "repo": "public-apis/public-apis",
+      "stars": 478496,
+      "reason": "teaching-content topics: list, lists"
+    },
+    {
+      "lang": "python",
+      "repo": "EbookFoundation/free-programming-books",
+      "stars": 396431,
+      "reason": "teaching-content topics: books, education, list"
+    },
+    {
+      "lang": "python",
+      "repo": "donnemartin/system-design-primer",
+      "stars": 369209,
+      "reason": "teaching-content topics: interview, interview-practice, interview-questions"
+    },
+    {
+      "lang": "python",
+      "repo": "vinta/awesome-python",
+      "stars": 319738,
+      "reason": "teaching-content topics: awesome, awesome-list"
+    },
+    {
+      "lang": "python",
+      "repo": "practical-tutorials/project-based-learning",
+      "stars": 282869,
+      "reason": "teaching-content topics: tutorial"
+    },
+    {
+      "lang": "python",
+      "repo": "NousResearch/hermes-agent",
+      "stars": 244151,
+      "reason": "903 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "python",
+      "repo": "TheAlgorithms/Python",
+      "stars": 224458,
+      "reason": "teaching-content topics: algorithm, education, interview, learn, practice"
+    },
+    {
+      "lang": "python",
+      "repo": "yt-dlp/yt-dlp",
+      "stars": 190155,
+      "reason": "in the tuning set"
+    },
+    {
+      "lang": "python",
+      "repo": "Significant-Gravitas/AutoGPT",
+      "stars": 187243,
+      "reason": "607 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "python",
+      "repo": "microsoft/markitdown",
+      "stars": 182382,
+      "reason": "no python package manifest at the root"
+    },
+    {
+      "lang": "python",
+      "repo": "521xueweihan/HelloGitHub",
+      "stars": 175870,
+      "reason": "teaching-content topics: awesome"
+    },
+    {
+      "lang": "python",
+      "repo": "anthropics/skills",
+      "stars": 175614,
+      "reason": "no python package manifest at the root"
+    },
+    {
+      "lang": "python",
+      "repo": "huggingface/transformers",
+      "stars": 165083,
+      "reason": "501 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "python",
+      "repo": "AUTOMATIC1111/stable-diffusion-webui",
+      "stars": 164887,
+      "reason": "8 test files, under 20"
+    },
+    {
+      "lang": "python",
+      "repo": "langflow-ai/langflow",
+      "stars": 154551,
+      "reason": "1499 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "python",
+      "repo": "open-webui/open-webui",
+      "stars": 151551,
+      "reason": "2 test files, under 20"
+    },
+    {
+      "lang": "python",
+      "repo": "langchain-ai/langchain",
+      "stars": 146078,
+      "reason": "582 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "python",
+      "repo": "anthropics/claude-code",
+      "stars": 144651,
+      "reason": "no python package manifest at the root"
+    },
+    {
+      "lang": "python",
+      "repo": "Shubhamsaboo/awesome-llm-apps",
+      "stars": 136942,
+      "reason": "no python package manifest at the root"
+    },
+    {
+      "lang": "python",
+      "repo": "github/spec-kit",
+      "stars": 134610,
+      "reason": "created 2025-08-21, after 2024-01-01"
+    },
+    {
+      "lang": "javascript",
+      "repo": "affaan-m/ECC",
+      "stars": 255726,
+      "reason": "created 2026-01-18, after 2024-01-01"
+    },
+    {
+      "lang": "javascript",
+      "repo": "react/react",
+      "stars": 249653,
+      "reason": "1055 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "javascript",
+      "repo": "trekhleb/javascript-algorithms",
+      "stars": 196677,
+      "reason": "teaching-content topics: algorithm, algorithms, computer-science, data-structures, interview"
+    },
+    {
+      "lang": "javascript",
+      "repo": "Snailclimb/JavaGuide",
+      "stars": 158431,
+      "reason": "teaching-content topics: interview"
+    },
+    {
+      "lang": "javascript",
+      "repo": "airbnb/javascript",
+      "stars": 148201,
+      "reason": "5 test files, under 20"
+    },
+    {
+      "lang": "javascript",
+      "repo": "vercel/next.js",
+      "stars": 142221,
+      "reason": "2501 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "javascript",
+      "repo": "DietrichGebert/ponytail",
+      "stars": 134500,
+      "reason": "created 2026-06-12, after 2024-01-01"
+    },
+    {
+      "lang": "javascript",
+      "repo": "Chalarangelo/30-seconds-of-code",
+      "stars": 129033,
+      "reason": "726 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "javascript",
+      "repo": "nodejs/node",
+      "stars": 121165,
+      "reason": "1513 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "javascript",
+      "repo": "mrdoob/three.js",
+      "stars": 115377,
+      "reason": "1625 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "javascript",
+      "repo": "axios/axios",
+      "stars": 109228,
+      "reason": "in the tuning set"
+    },
+    {
+      "lang": "javascript",
+      "repo": "mui/material-ui",
+      "stars": 99028,
+      "reason": "727 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "javascript",
+      "repo": "microsoft/Web-Dev-For-Beginners",
+      "stars": 96659,
+      "reason": "2153 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "javascript",
+      "repo": "thedotmack/claude-mem",
+      "stars": 93626,
+      "reason": "created 2025-08-31, after 2024-01-01"
+    },
+    {
+      "lang": "javascript",
+      "repo": "addyosmani/agent-skills",
+      "stars": 93363,
+      "reason": "no javascript package manifest at the root"
+    },
+    {
+      "lang": "typescript",
+      "repo": "freeCodeCamp/freeCodeCamp",
+      "stars": 455248,
+      "reason": "567 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "typescript",
+      "repo": "openclaw/openclaw",
+      "stars": 389370,
+      "reason": "4151 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "typescript",
+      "repo": "nilbuild/developer-roadmap",
+      "stars": 366800,
+      "reason": "teaching-content topics: computer-science, roadmap"
+    },
+    {
+      "lang": "typescript",
+      "repo": "deepseek-ai/deepseek-harness",
+      "stars": 218944,
+      "reason": "created 2026-08-13, after 2024-01-01"
+    },
+    {
+      "lang": "typescript",
+      "repo": "anomalyco/opencode",
+      "stars": 206393,
+      "reason": "497 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "typescript",
+      "repo": "n8n-io/n8n",
+      "stars": 203932,
+      "reason": "580 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "typescript",
+      "repo": "microsoft/vscode",
+      "stars": 191551,
+      "reason": "1385 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "typescript",
+      "repo": "firecrawl/firecrawl",
+      "stars": 178738,
+      "reason": "no typescript package manifest at the root"
+    },
+    {
+      "lang": "typescript",
+      "repo": "langgenius/dify",
+      "stars": 155341,
+      "reason": "533 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "typescript",
+      "repo": "clash-verge-rev/clash-verge-rev",
+      "stars": 143619,
+      "reason": "10 test files, under 20"
+    },
+    {
+      "lang": "typescript",
+      "repo": "yangshun/tech-interview-handbook",
+      "stars": 142549,
+      "reason": "teaching-content topics: algorithm, algorithms, interview-practice, interview-questions"
+    },
+    {
+      "lang": "typescript",
+      "repo": "iptv-org/iptv",
+      "stars": 138269,
+      "reason": "1325 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "typescript",
+      "repo": "garrytan/gstack",
+      "stars": 132414,
+      "reason": "created 2026-03-11, after 2024-01-01"
+    },
+    {
+      "lang": "typescript",
+      "repo": "excalidraw/excalidraw",
+      "stars": 131558,
+      "reason": "in the tuning set"
+    },
+    {
+      "lang": "go",
+      "repo": "avelino/awesome-go",
+      "stars": 183715,
+      "reason": "teaching-content topics: awesome, awesome-list"
+    },
+    {
+      "lang": "go",
+      "repo": "ollama/ollama",
+      "stars": 180578,
+      "reason": "in the tuning set"
+    },
+    {
+      "lang": "go",
+      "repo": "golang/go",
+      "stars": 137999,
+      "reason": "no go package manifest at the root"
+    },
+    {
+      "lang": "go",
+      "repo": "kubernetes/kubernetes",
+      "stars": 126894,
+      "reason": "1483 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "go",
+      "repo": "microsoft/TypeScript",
+      "stars": 110990,
+      "reason": "2794 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "java",
+      "repo": "krahets/hello-algo",
+      "stars": 130001,
+      "reason": "teaching-content topics: algorithm, algorithms, book, data-structures, education, leetcode"
+    },
+    {
+      "lang": "java",
+      "repo": "iluwatar/java-design-patterns",
+      "stars": 94683,
+      "reason": "teaching-content topics: awesome-list"
+    },
+    {
+      "lang": "java",
+      "repo": "Stirling-Tools/Stirling-PDF",
+      "stars": 91669,
+      "reason": "in the tuning set"
+    },
+    {
+      "lang": "java",
+      "repo": "macrozheng/mall",
+      "stars": 84737,
+      "reason": "5 test files, under 20"
+    },
+    {
+      "lang": "rust",
+      "repo": "ultraworkers/claw-code",
+      "stars": 195198,
+      "reason": "no rust package manifest at the root"
+    },
+    {
+      "lang": "rust",
+      "repo": "farion1231/cc-switch",
+      "stars": 132163,
+      "reason": "no rust package manifest at the root"
+    },
+    {
+      "lang": "rust",
+      "repo": "rustdesk/rustdesk",
+      "stars": 123084,
+      "reason": "9 test files, under 20"
+    },
+    {
+      "lang": "rust",
+      "repo": "openai/codex",
+      "stars": 123081,
+      "reason": "601 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "rust",
+      "repo": "rust-lang/rust",
+      "stars": 118001,
+      "reason": "970 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "rust",
+      "repo": "tauri-apps/tauri",
+      "stars": 110968,
+      "reason": "14 test files, under 20"
+    },
+    {
+      "lang": "rust",
+      "repo": "denoland/deno",
+      "stars": 108397,
+      "reason": "in the tuning set"
+    },
+    {
+      "lang": "rust",
+      "repo": "oven-sh/bun",
+      "stars": 95926,
+      "reason": "983 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "rust",
+      "repo": "ruvnet/RuView",
+      "stars": 92975,
+      "reason": "teaching-content topics: awesome"
+    },
+    {
+      "lang": "rust",
+      "repo": "zed-industries/zed",
+      "stars": 90059,
+      "reason": "503 MB, over the 500 MB cap"
+    },
+    {
+      "lang": "ruby",
+      "repo": "rails/rails",
+      "stars": 58747,
+      "reason": "in the tuning set"
     }
   ]
 }
