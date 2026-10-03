@@ -56,6 +56,22 @@ export async function baseTestFiles(root, base, cfg, changes, known) {
     }
     return out;
 }
+/**
+ * Where the oracle rule's candidate literals occur in the base tree, by `git grep`. One process per candidate, and
+ * candidates exist only when the rule is about to fire, so a session that fits nothing to its tests runs none.
+ * A failed grep answers "nowhere", which leaves the rule exactly as strict as it was without this.
+ */
+export function baseOccurrences(root, base) {
+    return async (literals) => {
+        const out = [];
+        for (const literal of literals) {
+            const listed = await git(root, ['grep', '-l', '-z', '-I', '-F', '-e', literal, base, '--'], NO_INDEX).catch(() => '');
+            for (const entry of listed.split('\0').filter(Boolean))
+                out.push({ path: entry.slice(base.length + 1), literal });
+        }
+        return out;
+    };
+}
 function emptyTotals() {
     return { commits: 0, skipped: 0, commitsTouchingTests: 0, commitsWithFindings: 0, commitsWithBlocks: 0, blockingCommitsTouchingTests: 0, findings: 0, findingsByRule: {}, blockingFindingsByRule: {}, blockingCommitsByRule: {} };
 }
@@ -112,6 +128,7 @@ export async function replay(root, cfg, opts) {
             exists: (p) => after.has(p),
             sessionMode: true,
             baseTestFiles: await baseTestFiles(root, ptree, cfg, changes, await trees.of(ptree)),
+            baseOccurrences: baseOccurrences(root, ptree),
         });
         const findings = result.findings;
         const decision = decide(findings, cfg.strict);

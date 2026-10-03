@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyze, isTestFile, DEFAULT_RULE_CONFIG } from '../src/rules.js';
+import { occurrencesIn } from '../src/oracle.js';
 import type { FileChange, Finding } from '../src/model.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -49,7 +50,7 @@ for (const name of names) {
     const expected = JSON.parse(await fs.readFile(path.join(dir, 'expected.json'), 'utf8')) as { findings: Expected[] };
     // Unchanged test files are not in the diff; the CLI reads them from the base tree, so the harness does too.
     const baseTestFiles = new Map(Object.entries(before).filter(([p]) => isTestFile(p, DEFAULT_RULE_CONFIG)));
-    const result = await analyze(diffDirs(before, after), undefined, { exists: (p) => p in after, baseTestFiles });
+    const result = await analyze(diffDirs(before, after), undefined, { exists: (p) => p in after, baseTestFiles, baseOccurrences: occurrencesIn(before) });
     const got = result.findings.map(key).sort();
     const want = expected.findings.map(key).sort();
     assert.deepEqual(got, want, `findings mismatch\n got: ${JSON.stringify(result.findings, null, 1)}`);

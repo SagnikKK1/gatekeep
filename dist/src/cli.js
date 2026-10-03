@@ -17,9 +17,9 @@ import { applyOverrides, overridesFromPrompts, overridesFromCli, overridesFromCo
 import { isTestFile } from './rules.js';
 import { runJudge } from './judge.js';
 import { renderReport } from './report.js';
-import { replay, baseTestFiles } from './replay.js';
+import { replay, baseTestFiles, baseOccurrences } from './replay.js';
 import { recordStop, statusOf, shadowNote, readShadowState, defaultShadow, DEFAULT_SHADOW_DAYS, DEFAULT_SHADOW_SESSIONS } from './shadow.js';
-import { rawLiterals } from './oracle.js';
+import { rawLiterals, occurrencesIn } from './oracle.js';
 import { redactFiles, fixtureName, issueUrl } from './reportfp.js';
 import { spawn } from 'node:child_process';
 const require = createRequire(import.meta.url);
@@ -133,7 +133,7 @@ async function runAnalysis(root, base, cfg, sessionMode, opts = {}) {
     const snapshot = { indexFlags: [], hidden: [] };
     const cur = await snapshotWorkingTree(root, snapshot);
     const changes = await diffTrees(root, base, cur, { shouldLoad: (p) => needsContent(p, cfg.rules), maxBytes: 2 * 1024 * 1024 });
-    const result = await analyze(changes, cfg.rules, { exists: (p) => existsSync(path.join(root, p)), sessionMode, task, noBaseline, baseTestFiles: await baseTestFiles(root, base, cfg, changes) });
+    const result = await analyze(changes, cfg.rules, { exists: (p) => existsSync(path.join(root, p)), sessionMode, task, noBaseline, baseTestFiles: await baseTestFiles(root, base, cfg, changes), baseOccurrences: baseOccurrences(root, base) });
     const originalTests = base === cur ? null : await runOriginalTests(root, base, cur, changes, cfg.rules, { testCommand: cfg.testCommand, testTimeoutMs: cfg.testTimeoutMs });
     result.findings.push(...testRunFindings(originalTests, cfg.rules.severities));
     // Both of these keep files out of `git add -A`, and neither lives in the tree, so no diff can show them changing.
@@ -986,7 +986,7 @@ async function analyzeFixture(before, after, cfg) {
         if (!(p in before))
             changes.push({ path: p, status: 'A', after: after[p] });
     const baseTestFiles = new Map(Object.entries(before).filter(([p]) => isTestFile(p, cfg.rules)));
-    const r = await analyze(changes, cfg.rules, { exists: (p) => p in after, baseTestFiles });
+    const r = await analyze(changes, cfg.rules, { exists: (p) => p in after, baseTestFiles, baseOccurrences: occurrencesIn(before) });
     return r.findings;
 }
 const asExpected = (f) => ({ rule: f.rule, file: f.file, ...(f.test ? { test: f.test } : {}), severity: f.severity });

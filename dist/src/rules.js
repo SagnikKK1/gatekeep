@@ -388,7 +388,7 @@ export async function analyze(changes, cfg = DEFAULT_RULE_CONFIG, opts = {}) {
     }
     findings.push(...integrityFindings(visible, cfg.severities, (p) => isTestFile(p, cfg)));
     findings.push(...scopeFindings(visible, cfg.severities, { protectedGlobs: cfg.protectedGlobs ?? DEFAULT_PROTECTED_GLOBS, task: opts.task, isTest: (p) => isTestFile(p, cfg) }));
-    findings.push(...oracleFindings(visible, cfg.severities, { isTest: (p) => isTestFile(p, cfg), baseTestFiles: opts.baseTestFiles }));
+    findings.push(...await oracleFindings(visible, cfg.severities, { isTest: (p) => isTestFile(p, cfg), baseTestFiles: opts.baseTestFiles, baseOccurrences: opts.baseOccurrences }));
     // .gitignore patterns that would hide test files from the snapshot (git add -A honors them)
     for (const c of visible) {
         // `git archive` honours `export-ignore`, and the original-tests check exports the tree with it. A path marked

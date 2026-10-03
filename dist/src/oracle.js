@@ -226,7 +226,29 @@ export function conditionText(line) {
     }
     return line.slice(i);
 }
-export function oracleFindings(changes, severities, opts) {
+/** `BaseOccurrences` over files held in memory, for callers that have the whole base tree already. */
+export function occurrencesIn(files) {
+    return async (literals) => {
+        const out = [];
+        for (const [path, text] of Object.entries(files))
+            for (const literal of literals)
+                if (text.includes(literal))
+                    out.push({ path, literal });
+        return out;
+    };
+}
+/** Files the rule reads: changed, pre-existing, non-test source. */
+function eligible(c, isTest) {
+    if (c.status === 'D' || c.after === undefined)
+        return false;
+    if (isTest(c.path) || langFor(c.path) === null)
+        return false;
+    // "Fitted to the tests" describes an implementation that was changed to satisfy them. A file added in this session
+    // has no earlier version that the tests could have pulled out of shape, and a new utility whose literals happen to
+    // appear in some test is the false positive this rule produces on real history.
+    return c.status !== 'A' && c.before !== undefined;
+}
+export async function oracleFindings(changes, severities, opts) {
     const severity = severities['test-oracle-in-source'] ?? ORACLE_SEVERITIES['test-oracle-in-source'];
     if (severity === 'off')
         return [];
@@ -254,6 +276,29 @@ export function oracleFindings(changes, severities, opts) {
     for (const t of testTexts)
         for (const l of literalsOf(t))
             known.add(l);
+    // A value the rest of the source already used is the codebase's own vocabulary, not one only the tests knew:
+    // `if (family === 'test integrity')` in one file compares against a name another file defines, and the tests name
+    // it too because they test that file. The base tree is what counts — a value the session wrote into two source
+    // files is still new to the source.
+    if (opts.baseOccurrences && known.size > 0) {
+        const candidates = new Set();
+        for (const c of changes) {
+            if (!eligible(c, opts.isTest))
+                continue;
+            const py = langFor(c.path) === 'python' || langFor(c.path) === 'ruby';
+            for (const { text } of addedLines(c.before, c.after)) {
+                for (const l of lineLiterals(codeOnly(text, py)))
+                    if (known.has(l) && !c.before.includes(l))
+                        candidates.add(l);
+            }
+        }
+        if (candidates.size > 0) {
+            for (const o of await opts.baseOccurrences([...candidates])) {
+                if (!opts.isTest(o.path) && langFor(o.path) !== null)
+                    known.delete(o.literal);
+            }
+        }
+    }
     // One test case's constants, kept together. A branch whose values all come from a single assertion is fitted to
     // that assertion even when each value on its own is too ordinary to mean anything.
     const testCases = [];
@@ -268,14 +313,7 @@ export function oracleFindings(changes, severities, opts) {
         : null;
     const out = [];
     for (const c of changes) {
-        if (c.status === 'D' || c.after === undefined)
-            continue;
-        if (opts.isTest(c.path) || langFor(c.path) === null)
-            continue;
-        // "Fitted to the tests" describes an implementation that was changed to satisfy them. A file added in this session
-        // has no earlier version that the tests could have pulled out of shape, and a new utility whose literals happen to
-        // appear in some test is the false positive this rule produces on real history.
-        if (c.status === 'A' || c.before === undefined)
+        if (!eligible(c, opts.isTest))
             continue;
         const added = addedLines(c.before, c.after);
         if (added.length === 0)

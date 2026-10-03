@@ -4,6 +4,7 @@ import { langFor } from './lang.js';
 import { decide } from './verdict.js';
 import type { GatekeepConfig } from './config.js';
 import type { Finding } from './model.js';
+import type { BaseOccurrences } from './oracle.js';
 
 /**
  * Replays real commit history through the deterministic rules: for each commit, diff it against its parent and ask
@@ -44,6 +45,22 @@ export async function baseTestFiles(root: string, base: string, cfg: GatekeepCon
     }
   } finally { batch.close(); }
   return out;
+}
+
+/**
+ * Where the oracle rule's candidate literals occur in the base tree, by `git grep`. One process per candidate, and
+ * candidates exist only when the rule is about to fire, so a session that fits nothing to its tests runs none.
+ * A failed grep answers "nowhere", which leaves the rule exactly as strict as it was without this.
+ */
+export function baseOccurrences(root: string, base: string): BaseOccurrences {
+  return async (literals) => {
+    const out: { path: string; literal: string }[] = [];
+    for (const literal of literals) {
+      const listed = await git(root, ['grep', '-l', '-z', '-I', '-F', '-e', literal, base, '--'], NO_INDEX).catch(() => '');
+      for (const entry of listed.split('\0').filter(Boolean)) out.push({ path: entry.slice(base.length + 1), literal });
+    }
+    return out;
+  };
 }
 
 export interface ReplayedCommit {
@@ -124,6 +141,7 @@ export async function replay(root: string, cfg: GatekeepConfig, opts: ReplayOpti
       exists: (p) => after.has(p),
       sessionMode: true,
       baseTestFiles: await baseTestFiles(root, ptree, cfg, changes, await trees.of(ptree)),
+      baseOccurrences: baseOccurrences(root, ptree),
     });
     const findings = result.findings;
     const decision = decide(findings, cfg.strict);

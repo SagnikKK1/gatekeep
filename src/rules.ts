@@ -9,7 +9,7 @@ import { extractJava } from './extract/java.js';
 import { extractRuby } from './extract/ruby.js';
 import { integrityFindings, INTEGRITY_GLOBS, INTEGRITY_SEVERITIES } from './integrity.js';
 import { CLAIM_SEVERITIES } from './claims.js';
-import { oracleFindings, ORACLE_SEVERITIES } from './oracle.js';
+import { oracleFindings, ORACLE_SEVERITIES, type BaseOccurrences } from './oracle.js';
 import { scopeFindings, SCOPE_SEVERITIES, SCOPE_GLOBS, LOCKFILE_GLOBS, DEFAULT_PROTECTED_GLOBS } from './scope.js';
 
 export interface RuleConfig {
@@ -142,6 +142,8 @@ export interface AnalyzeOptions {
   task?: string | null;
   /** Test files as they stood at session start. Unchanged ones are not in the diff, and the oracle rule needs them. */
   baseTestFiles?: Map<string, string>;
+  /** Where literals occur in the base tree, so the oracle rule can tell the codebase's own vocabulary from test data. */
+  baseOccurrences?: BaseOccurrences;
   /** True when no session baseline existed and the comparison fell back to HEAD, so "added" only means "not committed". */
   noBaseline?: boolean;
 }
@@ -368,7 +370,7 @@ export async function analyze(changes: FileChange[], cfg: RuleConfig = DEFAULT_R
   }
   findings.push(...integrityFindings(visible, cfg.severities, (p) => isTestFile(p, cfg)));
   findings.push(...scopeFindings(visible, cfg.severities, { protectedGlobs: cfg.protectedGlobs ?? DEFAULT_PROTECTED_GLOBS, task: opts.task, isTest: (p) => isTestFile(p, cfg) }));
-  findings.push(...oracleFindings(visible, cfg.severities, { isTest: (p) => isTestFile(p, cfg), baseTestFiles: opts.baseTestFiles }));
+  findings.push(...await oracleFindings(visible, cfg.severities, { isTest: (p) => isTestFile(p, cfg), baseTestFiles: opts.baseTestFiles, baseOccurrences: opts.baseOccurrences }));
   // .gitignore patterns that would hide test files from the snapshot (git add -A honors them)
   for (const c of visible) {
     // `git archive` honours `export-ignore`, and the original-tests check exports the tree with it. A path marked

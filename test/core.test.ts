@@ -12,7 +12,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { codeOnly, literalsOf, addedLines, rawLiterals, conditionText, oracleFindings } from '../src/oracle.js';
+import { codeOnly, literalsOf, addedLines, rawLiterals, conditionText, oracleFindings, occurrencesIn } from '../src/oracle.js';
 import { withTree, walk, descendants, ancestor, countErrors, line, unquote, tokens, named, kids, normaliseImportTypes } from '../src/parser.js';
 import { git, repoRoot, headTree, isShallow, resolveTree, lsTree, catFile, diffTrees, EMPTY_TREE, GitError } from '../src/git.js';
 
@@ -52,9 +52,20 @@ test('a guarded return of a domain constant is not an oracle, but a branch on on
     [{ path: 'src/detect.ts', status: 'M', before: 'export function detect(a) {\n  return null;\n}\n', after }],
     {}, { isTest: (p) => p.startsWith('test/'), baseTestFiles: tests });
   // Returning the value the tests assert on is how a correct implementation looks.
-  assert.deepEqual(run('export function detect(a) {\n  if (a.has(m)) return { command: "pytest -q" };\n  return null;\n}\n'), []);
+  assert.deepEqual(await run('export function detect(a) {\n  if (a.has(m)) return { command: "pytest -q" };\n  return null;\n}\n'), []);
   // Comparing against it is the thing the rule is for, and still fires.
-  assert.equal(run('export function detect(a) {\n  if (a === "pytest -q") return true;\n  return null;\n}\n').length, 1);
+  assert.equal((await run('export function detect(a) {\n  if (a === "pytest -q") return true;\n  return null;\n}\n')).length, 1);
+});
+
+test('a value the rest of the source already used is vocabulary, not a test oracle', async () => {
+  const tests = new Map([['test/x.test.ts', 'assert.equal(familyOf("test-deleted"), "test integrity");\n']]);
+  const change = { path: 'src/cli.ts', status: 'M' as const, before: 'function rate(f) {\n  return 0;\n}\n', after: 'function rate(f) {\n  if (f === "test integrity") return 1;\n  return 0;\n}\n' };
+  const run = (base: Record<string, string>) => oracleFindings([change], {}, { isTest: (p) => p.startsWith('test/'), baseTestFiles: tests, baseOccurrences: occurrencesIn(base) });
+  // Another source file defined the name at session start: the branch compares against the code's own vocabulary.
+  assert.deepEqual(await run({ 'src/rules.ts': 'return "test integrity";\n' }), []);
+  // Only the tests, the docs, or nobody at all knew it: still a value read off the tests.
+  assert.equal((await run({ 'test/y.test.ts': '"test integrity"\n', 'docs/rules.md': 'test integrity\n' })).length, 1);
+  assert.equal((await run({})).length, 1);
 });
 
 test('literalsOf and rawLiterals read the literals a branch could compare against', () => {
