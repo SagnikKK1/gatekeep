@@ -113,6 +113,29 @@ tuned against.
 The same caveat as everywhere else on this page applies and is worth repeating because it is the one people skip:
 this is a **false-alarm rate, not precision.** There are no true positives in human history to divide by.
 
+**The second fix, 2026-10-03.** Running gatekeep on its own repository again turned up a `test-oracle-in-source`
+warning on `src/cli.ts`: `if (f === 'test integrity' || ...)` branches on a family name that `src/rules.ts` defines
+and the tests assert. The rule asked only whether the edited file had used the value before. It now also asks the
+base tree, and a value some other non-test source file already contained is the codebase's own vocabulary rather than
+something read off the tests. Measured on this corpus, at the same pinned heads, once each way:
+
+| | before the fix | after |
+|---|---|---|
+| `test-oracle-in-source` findings | 8 | **4** |
+| all findings | 911 | 907 |
+| commits with a blocking finding | 54 of 2,100 (2.57%) | 54 of 2,100 (2.57%) |
+
+All four removed findings are ComfyUI's: `10000`, `1000.0` and `1000000` compared against in node code, values
+other modules of the same repository already used. The four in frp remain. Three of them are `127.0.0.1`, which
+the number scanner reads as the constants `127.0` and `0.1`; this fix moves them from the first shape to the
+single-test-case shape without removing them. That is a separate defect, and it is recorded here rather than fixed,
+because fixing it after reading it off this corpus would make this corpus a tuning set.
+
+Read it with the same discount as the first fix: this set has now been looked at twice, the change was prompted by
+gatekeep's own repository and not by these results, and 4 is a measurement on a set that is no longer clean. The
+blocking rate does not move, because the rule is `warn`. The next number for this rule should come from a fourth
+corpus.
+
 ### The tuning set
 
 These are the seven repositories the rules were narrowed against, so **every number here is in-sample.** The

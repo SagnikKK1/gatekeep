@@ -440,8 +440,9 @@ The numbers, the run records and the corrections are in [docs/replay.md](docs/re
   on the held-out set, all 12 on source that branches on domain vocabulary the tests happen to share.
 - **A third corpus** was drawn the same way, with both earlier sets excluded, to measure the fix for that defect —
   fixing a rule against the held-out set would only have made it a second tuning set. On 2,100 fresh commits the fix
-  takes the rule from **9 findings to 8**, and the blocking rate does not move at all, because the rule is `warn`.
-  Those 8 are 8 false alarms, and that is the number for this rule now.
+  takes the rule from **9 findings to 8**, and a second fix (values the rest of the source already uses are not test
+  data) takes it to **4**. The blocking rate does not move at all, because the rule is `warn`. Those 4 are 4 false
+  alarms on a set that has now been looked at twice, so the next number has to come from a fourth corpus.
 - **Ten rules that never fired once in-sample fire out of sample**, eight of them blocking. Read the other zeros as
   "this corpus never exercised the rule" until a second corpus says otherwise.
 - **These are false-alarm rates, not precision.** A corpus of human commits contains no agent cheats, so there is no
